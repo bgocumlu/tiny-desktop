@@ -1,0 +1,13 @@
+{
+  "name": "tiny-desktop-mvp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node cli/tiny.mjs dev",
+    "build": "node cli/tiny.mjs build",
+    "check": "node cli/tiny.mjs check"
+  },
+  "devDependencies": {
+    "vite": "^8.2.1"
+  }
+}
