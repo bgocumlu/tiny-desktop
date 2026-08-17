@@ -14,6 +14,7 @@ if (!npmCli) throw new Error('Run the e2e test with npm test.');
 const projectRoot = await mkdtemp(join(repoRoot, '.tmp-e2e-'));
 const appName = basename(projectRoot);
 const dataRoot = join(process.env.APPDATA, appName);
+const webviewRoot = join(process.env.LOCALAPPDATA, appName, 'WebView2');
 let host;
 let passed = false;
 const previousRuntimePackage = process.env.TINY_RUNTIME_PACKAGE;
@@ -95,7 +96,7 @@ try {
       reject(new Error(`Tiny host exited during startup with code ${code}.`));
     });
   });
-  await waitFor(() => exists(join(dataRoot, 'WebView2')));
+  await waitFor(() => exists(webviewRoot));
 
   passed = true;
   console.log('E2E passed: create, install, build, bundle, launch, and WebView2 initialization.');
@@ -112,6 +113,7 @@ try {
   if (passed) {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(dataRoot, { recursive: true, force: true });
+    await rm(join(process.env.LOCALAPPDATA, appName), { recursive: true, force: true });
   } else {
     console.error(`E2E project kept for diagnosis: ${projectRoot}`);
   }

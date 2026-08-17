@@ -8,6 +8,7 @@
 #include "resource.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cwctype>
 #include <filesystem>
@@ -45,6 +46,24 @@ bool devtools = false;
 bool bundled = false;
 std::optional<COLORREF> titlebar_color;
 std::optional<COLORREF> titlebar_text_color;
+constexpr COLORREF startup_background = RGB(31, 31, 31);
+HBRUSH startup_background_brush = nullptr;
+
+COREWEBVIEW2_COLOR startup_webview_background() {
+  return {
+      255,
+      GetRValue(startup_background),
+      GetGValue(startup_background),
+      GetBValue(startup_background)};
+}
+
+const auto startup_clock = std::chrono::steady_clock::now();
+
+void startup_log(const wchar_t* stage) {
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - startup_clock).count();
+  OutputDebugStringW((L"[Tiny] " + std::wstring(stage) + L" +" + std::to_wstring(elapsed) + L"ms\n").c_str());
+}
 
 std::filesystem::path module_path() {
   std::wstring value(MAX_PATH, L'\0');
@@ -78,6 +97,12 @@ std::wstring safe_name(std::wstring value) {
 std::filesystem::path roaming_data_dir() {
   wchar_t value[MAX_PATH]{};
   if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, value))) return {};
+  return std::filesystem::path(value) / safe_name(app_name);
+}
+
+std::filesystem::path local_app_data_dir() {
+  wchar_t value[MAX_PATH]{};
+  if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, value))) return {};
   return std::filesystem::path(value) / safe_name(app_name);
 }
 
@@ -473,11 +498,19 @@ void configure_webview() {
         const std::wstring uri = raw_uri ? raw_uri : L"";
         CoTaskMemFree(raw_uri);
         if (!same_origin(uri, development ? allowed_origin : L"https://app.local")) args->put_Cancel(TRUE);
+        else startup_log(L"navigation-starting");
         return S_OK;
       }).Get(), &token);
   webview->add_NewWindowRequested(Callback<ICoreWebView2NewWindowRequestedEventHandler>(
       [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
         args->put_Handled(TRUE);
+        return S_OK;
+      }).Get(), &token);
+  webview->add_NavigationCompleted(Callback<ICoreWebView2NavigationCompletedEventHandler>(
+      [](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+        BOOL success = FALSE;
+        args->get_IsSuccess(&success);
+        startup_log(success ? L"navigation-completed" : L"navigation-failed");
         return S_OK;
       }).Get(), &token);
   webview->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(
@@ -503,12 +536,21 @@ void configure_webview() {
             if (FAILED(result)) {
               MessageBoxW(window_handle, L"Could not install the native bridge.", L"Tiny", MB_ICONERROR);
               PostQuitMessage(1);
-            } else navigate();
+            } else {
+              startup_log(L"bridge-ready");
+              navigate();
+            }
             return S_OK;
           }).Get());
 }
 
 LRESULT CALLBACK window_proc(HWND handle, UINT message, WPARAM w_param, LPARAM l_param) {
+  if (message == WM_ERASEBKGND && startup_background_brush) {
+    RECT bounds{};
+    GetClientRect(handle, &bounds);
+    FillRect(reinterpret_cast<HDC>(w_param), &bounds, startup_background_brush);
+    return 1;
+  }
   if (message == WM_SIZE && controller) {
     RECT bounds{};
     GetClientRect(handle, &bounds);
@@ -530,7 +572,10 @@ void configure_titlebar() {
 }
 
 void create_webview() {
-  const auto user_data = data_dir / L"WebView2";
+  const auto local_data = local_app_data_dir();
+  const auto user_data = storage_mode == L"portable" || local_data.empty()
+      ? data_dir / L"WebView2"
+      : local_data / L"WebView2";
   std::error_code error;
   std::filesystem::create_directories(user_data, error);
   if (error) {
@@ -538,6 +583,7 @@ void create_webview() {
     PostQuitMessage(1);
     return;
   }
+  startup_log(L"webview-environment-requested");
   CreateCoreWebView2EnvironmentWithOptions(nullptr, user_data.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
@@ -546,23 +592,36 @@ void create_webview() {
               PostQuitMessage(1);
               return result;
             }
+            startup_log(L"webview-environment-ready");
             web_environment = environment;
-            return environment->CreateCoreWebView2Controller(window_handle,
-                Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                    [](HRESULT result, ICoreWebView2Controller* value) -> HRESULT {
+            auto controller_handler = Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                [](HRESULT result, ICoreWebView2Controller* value) -> HRESULT {
                       if (FAILED(result) || !value) {
                         MessageBoxW(window_handle, L"Could not create the WebView2 window.", L"Tiny", MB_ICONERROR);
                         PostQuitMessage(1);
                         return result;
                       }
                       controller = value;
+                      startup_log(L"webview-controller-ready");
+                      ComPtr<ICoreWebView2Controller2> controller2;
+                      if (SUCCEEDED(controller.As(&controller2))) controller2->put_DefaultBackgroundColor(startup_webview_background());
                       controller->get_CoreWebView2(&webview);
                       RECT bounds{};
                       GetClientRect(window_handle, &bounds);
                       controller->put_Bounds(bounds);
                       configure_webview();
                       return S_OK;
-                    }).Get());
+                    });
+            ComPtr<ICoreWebView2Environment10> environment10;
+            ComPtr<ICoreWebView2ControllerOptions> options;
+            if (SUCCEEDED(environment->QueryInterface(IID_PPV_ARGS(&environment10))) &&
+                SUCCEEDED(environment10->CreateCoreWebView2ControllerOptions(&options))) {
+              ComPtr<ICoreWebView2ControllerOptions3> options3;
+              if (SUCCEEDED(options.As(&options3))) options3->put_DefaultBackgroundColor(startup_webview_background());
+              return environment10->CreateCoreWebView2ControllerWithOptions(
+                  window_handle, options.Get(), controller_handler.Get());
+            }
+            return environment->CreateCoreWebView2Controller(window_handle, controller_handler.Get());
           }).Get());
 }
 
@@ -616,6 +675,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   window_class.lpfnWndProc = window_proc;
   window_class.lpszClassName = L"TinyWindow";
   window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  startup_background_brush = CreateSolidBrush(startup_background);
+  window_class.hbrBackground = startup_background_brush;
   RegisterClassW(&window_class);
 
   window_handle = CreateWindowW(window_class.lpszClassName, app_name.c_str(), WS_OVERLAPPEDWINDOW,
@@ -623,6 +684,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   if (!window_handle) return 1;
   configure_titlebar();
   ShowWindow(window_handle, SW_SHOW);
+  startup_log(L"window-shown");
 
   const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(initialized)) return 1;
