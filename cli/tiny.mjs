@@ -26,23 +26,50 @@ function run(command, args, options = {}) {
   });
 }
 
+function normalizeVersion(value) {
+  const text = String(value ?? '0.1.0').trim();
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$/.exec(text);
+  const parts = match?.slice(1).filter(part => part !== undefined).map(Number);
+  if (!parts || parts.some(part => !Number.isSafeInteger(part) || part > 65535)) {
+    throw new Error("tiny.config.js app.version must be a numeric version like '1.0.0'.");
+  }
+  return { text, windows: [...parts, 0].slice(0, 4).join('.') };
+}
+
 async function loadConfig() {
   const configPath = join(projectRoot, 'tiny.config.js');
-  const defaults = { app: { name: basename(projectRoot) }, package: 'standalone', storage: { mode: 'appData' }, window: { titleBar: {} } };
+  const defaults = {
+    app: {
+      name: basename(projectRoot),
+      version: '0.1.0',
+      version4: '0.1.0.0',
+      publisher: '',
+      description: '',
+      copyright: '',
+      website: ''
+    },
+    package: 'standalone',
+    storage: { mode: 'appData' },
+    window: { titleBar: {} }
+  };
+  let config = {};
   try {
     await stat(configPath);
   } catch {
     return defaults;
   }
   const loaded = await import(`${pathToFileURL(configPath).href}?v=${Date.now()}`);
-  const config = loaded.default ?? loaded;
+  config = loaded.default ?? loaded;
   const packageMode = config.package ?? defaults.package;
   if (packageMode !== 'standalone' && packageMode !== 'installer') {
     throw new Error("tiny.config.js package must be 'standalone' or 'installer'.");
   }
   const mode = config.storage?.mode ?? defaults.storage.mode;
   if (mode !== 'appData' && mode !== 'portable') throw new Error("tiny.config.js storage.mode must be 'appData' or 'portable'.");
-  const icon = config.app?.icon ? resolve(projectRoot, String(config.app.icon)) : undefined;
+  const appConfig = config.app ?? {};
+  const name = String(appConfig.name ?? defaults.app.name);
+  const version = normalizeVersion(appConfig.version ?? defaults.app.version);
+  const icon = appConfig.icon ? resolve(projectRoot, String(appConfig.icon)) : undefined;
   if (icon && extname(icon).toLowerCase() !== '.ico') throw new Error("tiny.config.js app.icon must point to an .ico file.");
   for (const [name, value] of Object.entries(config.window?.titleBar ?? {})) {
     if (['color', 'textColor'].includes(name) && value !== undefined && !/^#[0-9a-f]{6}$/i.test(String(value))) {
@@ -53,7 +80,18 @@ async function loadConfig() {
     ...defaults,
     ...config,
     package: packageMode,
-    app: { ...defaults.app, ...config.app, name: String(config.app?.name ?? defaults.app.name), icon },
+    app: {
+      ...defaults.app,
+      ...appConfig,
+      name,
+      version: version.text,
+      version4: version.windows,
+      publisher: String(appConfig.publisher ?? defaults.app.publisher),
+      description: String(appConfig.description ?? name),
+      copyright: String(appConfig.copyright ?? defaults.app.copyright),
+      website: String(appConfig.website ?? defaults.app.website),
+      icon
+    },
     storage: { mode },
     window: { ...defaults.window, ...config.window, titleBar: { ...defaults.window.titleBar, ...config.window?.titleBar } }
   };
@@ -167,18 +205,41 @@ async function collectFiles(directory, prefix = '') {
   return files;
 }
 
-async function setIcon(executable, icon) {
+async function setExecutableMetadata(executable, app, executableName) {
   const binary = ResEdit.NtExecutable.from(await readFile(executable));
   const resources = ResEdit.NtExecutableResource.from(binary);
-  const group = ResEdit.Resource.IconGroupEntry.fromEntries(resources.entries)[0];
-  if (!group) throw new Error('The Tiny host has no icon resource to replace.');
-  const iconFile = ResEdit.Data.IconFile.from(await readFile(icon));
-  ResEdit.Resource.IconGroupEntry.replaceIconsForResource(
-    resources.entries,
-    group.id,
-    group.lang,
-    iconFile.icons.map(({ data }) => data)
+  if (app.icon) {
+    const group = ResEdit.Resource.IconGroupEntry.fromEntries(resources.entries)[0];
+    if (!group) throw new Error('The Tiny host has no icon resource to replace.');
+    const iconFile = ResEdit.Data.IconFile.from(await readFile(app.icon));
+    ResEdit.Resource.IconGroupEntry.replaceIconsForResource(
+      resources.entries,
+      group.id,
+      group.lang,
+      iconFile.icons.map(({ data }) => data)
+    );
+  }
+  const versionInfo = ResEdit.Resource.VersionInfo.fromEntries(resources.entries)[0] ?? ResEdit.Resource.VersionInfo.create(
+    1033,
+    {
+      fileOS: ResEdit.Resource.VersionFileOS.NT_Windows32,
+      fileType: ResEdit.Resource.VersionFileType.App
+    },
+    [{ lang: 1033, codepage: 1200, values: {} }]
   );
+  versionInfo.setFileVersion(app.version4, 1033);
+  versionInfo.setProductVersion(app.version4, 1033);
+  versionInfo.setStringValues({ lang: 1033, codepage: 1200 }, {
+    CompanyName: app.publisher,
+    FileDescription: app.description,
+    FileVersion: app.version4,
+    InternalName: executableName,
+    LegalCopyright: app.copyright,
+    OriginalFilename: executableName,
+    ProductName: app.name,
+    ProductVersion: app.version4
+  });
+  versionInfo.outputToResourceEntries(resources.entries);
   resources.outputResource(binary);
   await writeFile(executable, Buffer.from(binary.generate()));
 }
@@ -212,6 +273,11 @@ function nsisString(value) {
 
 function installerScript(config, executable, output, icon) {
   const appName = nsisString(config.app.name);
+  const appVersion = nsisString(config.app.version4);
+  const appPublisher = nsisString(config.app.publisher);
+  const appDescription = nsisString(config.app.description);
+  const appCopyright = nsisString(config.app.copyright);
+  const appWebsite = nsisString(config.app.website);
   const appFile = nsisString(executable);
   const installerFile = nsisString(output);
   const bootstrapperFile = nsisString(webviewBootstrapper);
@@ -219,19 +285,29 @@ function installerScript(config, executable, output, icon) {
   const uninstallKey = `Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${appName}`;
   const installDir = `$LOCALAPPDATA\\Programs\\${appName}`;
   const executableName = nsisString(executable.split(/[\\/]/).pop());
+  const installerName = nsisString(basename(output));
 
   return `Unicode True
 !include nsDialogs.nsh
 !include WinMessages.nsh
+!include FileFunc.nsh
 Name "${appName}"
 Caption "${appName} Setup"
 OutFile "${installerFile}"
+VIProductVersion "${appVersion}"
+VIAddVersionKey /LANG=1033 "ProductName" "${appName}"
+VIAddVersionKey /LANG=1033 "CompanyName" "${appPublisher}"
+VIAddVersionKey /LANG=1033 "FileDescription" "${appDescription}"
+VIAddVersionKey /LANG=1033 "FileVersion" "${appVersion}"
+VIAddVersionKey /LANG=1033 "ProductVersion" "${appVersion}"
+VIAddVersionKey /LANG=1033 "OriginalFilename" "${installerName}"
+VIAddVersionKey /LANG=1033 "LegalCopyright" "${appCopyright}"
 InstallDir "${installDir}"
 InstallDirRegKey HKCU "${uninstallKey}" "InstallLocation"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 ${iconLine}
-BrandingText "${appName}"
+BrandingText ""
 Page custom WebView2PageCreate WebView2PageLeave
 PageEx directory
   PageCallbacks "" DirectoryPageShow ""
@@ -341,9 +417,15 @@ Section
 
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
   WriteRegStr HKCU "${uninstallKey}" "DisplayName" "${appName}"
+  WriteRegStr HKCU "${uninstallKey}" "DisplayVersion" "${appVersion}"
+  WriteRegStr HKCU "${uninstallKey}" "Publisher" "${appPublisher}"
   WriteRegStr HKCU "${uninstallKey}" "DisplayIcon" "$INSTDIR\\${executableName}"
   WriteRegStr HKCU "${uninstallKey}" "UninstallString" "$INSTDIR\\Uninstall.exe"
   WriteRegStr HKCU "${uninstallKey}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${uninstallKey}" "URLInfoAbout" "${appWebsite}"
+  \${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  IntFmt $0 "0x%08X" $0
+  WriteRegDWORD HKCU "${uninstallKey}" "EstimatedSize" "$0"
   CreateDirectory "$SMPROGRAMS\\${appName}"
   CreateShortcut "$SMPROGRAMS\\${appName}\\${appName}.lnk" "$INSTDIR\\${executableName}"
   CreateShortcut "$DESKTOP\\${appName}.lnk" "$INSTDIR\\${executableName}"
@@ -373,17 +455,15 @@ async function buildStandalone(config) {
   await mkdir(release, { recursive: true });
   const filename = (config.app.name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Tiny') + '.exe';
   const output = join(release, filename);
-  const iconHost = config.app.icon ? join(release, '.tiny-host.exe') : undefined;
+  const hostCopy = join(release, '.tiny-host.exe');
   await rm(join(release, 'app'), { recursive: true, force: true });
   await rm(output, { force: true });
-  if (iconHost) {
-    await cp(runtime, iconHost);
-    await setIcon(iconHost, config.app.icon);
-  }
+  await cp(runtime, hostCopy);
   try {
-    await bundleRuntime(iconHost ?? runtime, join(projectRoot, 'dist'), output, config);
+    await setExecutableMetadata(hostCopy, config.app, filename);
+    await bundleRuntime(hostCopy, join(projectRoot, 'dist'), output, config);
   } finally {
-    if (iconHost) await rm(iconHost, { force: true });
+    await rm(hostCopy, { force: true });
   }
   console.log(`Built release/${filename} with embedded Vite assets.`);
   return output;

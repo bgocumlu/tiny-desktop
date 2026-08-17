@@ -3,6 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as ResEdit from 'resedit';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') {
   throw new Error('Tiny Windows e2e requires Windows x64.');
@@ -72,6 +73,13 @@ try {
     assert.equal(await exists(join(projectRoot, path)), true, `Missing generated file: ${path}`);
   }
 
+  const configPath = join(projectRoot, 'tiny.config.js');
+  let config = await readFile(configPath, 'utf8');
+  config = config
+    .replace("publisher: ''", "publisher: 'Tiny Test Publisher'")
+    .replace(`description: '${appName}'`, "description: 'Tiny metadata test'");
+  await writeFile(configPath, config);
+
   const npmOnlyEnv = {
     ...process.env,
     PATH: [join(projectRoot, 'node_modules', '.bin'), dirname(process.execPath)].join(';')
@@ -86,14 +94,25 @@ try {
   const bundle = (await readFile(executable)).toString('ascii');
   assert.ok(bundle.includes('TINYBND1'), 'The executable is missing the bundle header.');
   assert.ok(bundle.includes('TINYEND1'), 'The executable is missing the bundle footer.');
+  const resources = ResEdit.NtExecutableResource.from(ResEdit.NtExecutable.from(await readFile(executable)));
+  const versionInfo = ResEdit.Resource.VersionInfo.fromEntries(resources.entries)[0];
+  assert.ok(versionInfo, 'The executable is missing version metadata.');
+  const versionValues = versionInfo.getStringValues({ lang: 1033, codepage: 1200 });
+  assert.equal(versionValues.ProductName, appName, 'The executable ProductName is incorrect.');
+  assert.equal(versionValues.CompanyName, 'Tiny Test Publisher', 'The executable CompanyName is incorrect.');
+  assert.equal(versionValues.FileDescription, 'Tiny metadata test', 'The executable FileDescription is incorrect.');
+  assert.equal(versionValues.FileVersion, '0.1.0.0', 'The executable FileVersion is incorrect.');
 
-  const configPath = join(projectRoot, 'tiny.config.js');
-  const config = await readFile(configPath, 'utf8');
   await writeFile(configPath, config.replace("package: 'standalone'", "package: 'installer'"));
   run(['run', 'build'], projectRoot, npmOnlyEnv);
   const installer = join(projectRoot, 'release', `${appName}-setup.exe`);
   assert.equal(await exists(installer), true, 'The NSIS installer was not created.');
   assert.ok((await stat(installer)).size > 100 * 1024, 'The installer is unexpectedly small.');
+  const installerResources = ResEdit.NtExecutableResource.from(ResEdit.NtExecutable.from(await readFile(installer)));
+  const installerVersionInfo = ResEdit.Resource.VersionInfo.fromEntries(installerResources.entries)[0];
+  const installerVersionValues = installerVersionInfo.getStringValues({ lang: 1033, codepage: 1200 });
+  assert.equal(installerVersionValues.ProductName, appName, 'The installer ProductName is incorrect.');
+  assert.equal(installerVersionValues.CompanyName, 'Tiny Test Publisher', 'The installer CompanyName is incorrect.');
   const installedRoot = join(projectRoot, 'installed');
   const installResult = spawnSync(installer, ['/S', `/D=${installedRoot}`], {
     cwd: projectRoot,
@@ -102,6 +121,13 @@ try {
   });
   assert.equal(installResult.status, 0, 'The NSIS installer failed.');
   assert.equal(await exists(join(installedRoot, `${appName}.exe`)), true, 'The installer did not install the app.');
+  const uninstallKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${appName}`;
+  const registryResult = spawnSync('reg.exe', ['query', uninstallKey, '/v', 'EstimatedSize'], {
+    encoding: 'utf8',
+    windowsHide: true
+  });
+  assert.equal(registryResult.status, 0, 'The installer did not register EstimatedSize.');
+  assert.match(registryResult.stdout, /EstimatedSize\s+REG_DWORD\s+0x[0-9a-f]+/i, 'EstimatedSize is not a DWORD.');
   const uninstallResult = spawnSync(join(installedRoot, 'Uninstall.exe'), ['/S'], {
     cwd: installedRoot,
     stdio: 'inherit',
