@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') {
@@ -71,7 +71,11 @@ try {
     assert.equal(await exists(join(projectRoot, path)), true, `Missing generated file: ${path}`);
   }
 
-  run(['run', 'build'], projectRoot);
+  const npmOnlyEnv = {
+    ...process.env,
+    PATH: [join(projectRoot, 'node_modules', '.bin'), dirname(process.execPath)].join(';')
+  };
+  run(['run', 'build'], projectRoot, npmOnlyEnv);
 
   const executable = join(projectRoot, 'release', `${appName}.exe`);
   assert.equal(await exists(executable), true, 'The production executable was not created.');

@@ -8,13 +8,11 @@
   "files": [
     "cli",
     "runtime",
-    "types",
-    "native/CMakeLists.txt",
-    "native/main.cpp",
-    "native/resource.h",
-    "native/tiny.ico",
-    "native/tiny.rc"
+    "types"
   ],
+  "dependencies": {
+    "resedit": "^3.0.2"
+  },
   "scripts": {
     "check": "node cli/tiny.mjs check",
     "test": "node tests/e2e.mjs",

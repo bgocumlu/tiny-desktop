@@ -3,6 +3,7 @@ import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promi
 import { spawn } from 'node:child_process';
 import { dirname, basename, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as ResEdit from 'resedit';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const projectRoot = resolve(process.cwd());
@@ -66,8 +67,8 @@ async function requireRuntime() {
   });
 }
 
-async function buildNative(icon = '') {
-  await run('cmake', ['-S', 'native', '-B', 'native/build', '-A', 'x64', `-DTINY_ICON_PATH=${icon}`], { cwd: packageRoot });
+async function buildNative() {
+  await run('cmake', ['-S', 'native', '-B', 'native/build', '-A', 'x64'], { cwd: packageRoot });
   await run('cmake', ['--build', 'native/build', '--config', 'Release'], { cwd: packageRoot });
   return join(nativeBuild, 'Release', 'tiny-host.exe');
 }
@@ -147,6 +148,22 @@ async function collectFiles(directory, prefix = '') {
   return files;
 }
 
+async function setIcon(executable, icon) {
+  const binary = ResEdit.NtExecutable.from(await readFile(executable));
+  const resources = ResEdit.NtExecutableResource.from(binary);
+  const group = ResEdit.Resource.IconGroupEntry.fromEntries(resources.entries)[0];
+  if (!group) throw new Error('The Tiny host has no icon resource to replace.');
+  const iconFile = ResEdit.Data.IconFile.from(await readFile(icon));
+  ResEdit.Resource.IconGroupEntry.replaceIconsForResource(
+    resources.entries,
+    group.id,
+    group.lang,
+    iconFile.icons.map(({ data }) => data)
+  );
+  resources.outputResource(binary);
+  await writeFile(executable, Buffer.from(binary.generate()));
+}
+
 async function bundleRuntime(host, dist, output, config) {
   const hostBytes = await readFile(host);
   const files = await collectFiles(dist);
@@ -172,12 +189,21 @@ async function buildApp() {
   await requireRuntime();
   const config = await loadConfig();
   await run(process.execPath, [vite, 'build']);
-  const host = config.app.icon ? await buildNative(config.app.icon) : runtime;
   await mkdir(release, { recursive: true });
   const filename = (config.app.name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Tiny') + '.exe';
+  const output = join(release, filename);
+  const iconHost = config.app.icon ? join(release, '.tiny-host.exe') : undefined;
   await rm(join(release, 'app'), { recursive: true, force: true });
-  await rm(join(release, filename), { force: true });
-  await bundleRuntime(host, join(projectRoot, 'dist'), join(release, filename), config);
+  await rm(output, { force: true });
+  if (iconHost) {
+    await cp(runtime, iconHost);
+    await setIcon(iconHost, config.app.icon);
+  }
+  try {
+    await bundleRuntime(iconHost ?? runtime, join(projectRoot, 'dist'), output, config);
+  } finally {
+    if (iconHost) await rm(iconHost, { force: true });
+  }
   console.log(`Built release/${filename} with embedded Vite assets.`);
 }
 
