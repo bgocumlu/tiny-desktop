@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { dirname, basename, join, relative, resolve, sep } from 'node:path';
+import { dirname, basename, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,7 +25,7 @@ function run(command, args, options = {}) {
 
 async function loadConfig() {
   const configPath = join(projectRoot, 'tiny.config.js');
-  const defaults = { app: { name: basename(projectRoot) }, storage: { mode: 'appData' } };
+  const defaults = { app: { name: basename(projectRoot) }, storage: { mode: 'appData' }, window: { titleBar: {} } };
   try {
     await stat(configPath);
   } catch {
@@ -35,11 +35,19 @@ async function loadConfig() {
   const config = loaded.default ?? loaded;
   const mode = config.storage?.mode ?? defaults.storage.mode;
   if (mode !== 'appData' && mode !== 'portable') throw new Error("tiny.config.js storage.mode must be 'appData' or 'portable'.");
+  const icon = config.app?.icon ? resolve(projectRoot, String(config.app.icon)) : undefined;
+  if (icon && extname(icon).toLowerCase() !== '.ico') throw new Error("tiny.config.js app.icon must point to an .ico file.");
+  for (const [name, value] of Object.entries(config.window?.titleBar ?? {})) {
+    if (['color', 'textColor'].includes(name) && value !== undefined && !/^#[0-9a-f]{6}$/i.test(String(value))) {
+      throw new Error(`tiny.config.js window.titleBar.${name} must be a #RRGGBB color.`);
+    }
+  }
   return {
     ...defaults,
     ...config,
-    app: { ...defaults.app, ...config.app, name: String(config.app?.name ?? defaults.app.name) },
-    storage: { mode }
+    app: { ...defaults.app, ...config.app, name: String(config.app?.name ?? defaults.app.name), icon },
+    storage: { mode },
+    window: { ...defaults.window, ...config.window, titleBar: { ...defaults.window.titleBar, ...config.window?.titleBar } }
   };
 }
 
@@ -58,8 +66,8 @@ async function requireRuntime() {
   });
 }
 
-async function buildNative() {
-  await run('cmake', ['-S', 'native', '-B', 'native/build', '-A', 'x64'], { cwd: packageRoot });
+async function buildNative(icon = '') {
+  await run('cmake', ['-S', 'native', '-B', 'native/build', '-A', 'x64', `-DTINY_ICON_PATH=${icon}`], { cwd: packageRoot });
   await run('cmake', ['--build', 'native/build', '--config', 'Release'], { cwd: packageRoot });
   return join(nativeBuild, 'Release', 'tiny-host.exe');
 }
@@ -88,6 +96,9 @@ async function waitForVite(url, timeout = 30000) {
 function runtimeArgs(config) {
   const args = ['--app-name', config.app.name, '--storage', config.storage.mode];
   if (config.storage.mode === 'portable') args.push('--data-dir', join(projectRoot, '.tiny', 'data'));
+  const titleBar = config.window.titleBar;
+  if (titleBar.color) args.push('--titlebar-color', titleBar.color);
+  if (titleBar.textColor) args.push('--titlebar-text-color', titleBar.textColor);
   return args;
 }
 
@@ -161,11 +172,12 @@ async function buildApp() {
   await requireRuntime();
   const config = await loadConfig();
   await run(process.execPath, [vite, 'build']);
+  const host = config.app.icon ? await buildNative(config.app.icon) : runtime;
   await mkdir(release, { recursive: true });
   const filename = (config.app.name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Tiny') + '.exe';
   await rm(join(release, 'app'), { recursive: true, force: true });
   await rm(join(release, filename), { force: true });
-  await bundleRuntime(runtime, join(projectRoot, 'dist'), join(release, filename), config);
+  await bundleRuntime(host, join(projectRoot, 'dist'), join(release, filename), config);
   console.log(`Built release/${filename} with embedded Vite assets.`);
 }
 

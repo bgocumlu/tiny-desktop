@@ -1,9 +1,11 @@
 #include <windows.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <Shlwapi.h>
 #include <wrl.h>
 #include <WebView2.h>
+#include "resource.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -41,6 +43,8 @@ std::uint64_t bundle_data_end = 0;
 bool development = false;
 bool devtools = false;
 bool bundled = false;
+std::optional<COLORREF> titlebar_color;
+std::optional<COLORREF> titlebar_text_color;
 
 std::filesystem::path module_path() {
   std::wstring value(MAX_PATH, L'\0');
@@ -93,6 +97,17 @@ std::string wide_to_utf8(const std::wstring& value) {
   std::string result(length, '\0');
   WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(), length, nullptr, nullptr);
   return result;
+}
+
+std::optional<COLORREF> color_from_hex(const std::wstring& value) {
+  if (value.size() != 7 || value[0] != L'#') return std::nullopt;
+  unsigned int rgb = 0;
+  for (std::size_t index = 1; index < value.size(); ++index) {
+    const wchar_t character = towlower(value[index]);
+    if (character < L'0' || character > L'f' || (character > L'9' && character < L'a')) return std::nullopt;
+    rgb = (rgb << 4) | (character <= L'9' ? character - L'0' : character - L'a' + 10);
+  }
+  return RGB((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
 }
 
 std::optional<std::wstring> json_raw_value(const std::wstring& json, const std::wstring& key, std::size_t from = 0) {
@@ -504,6 +519,16 @@ LRESULT CALLBACK window_proc(HWND handle, UINT message, WPARAM w_param, LPARAM l
   return DefWindowProcW(handle, message, w_param, l_param);
 }
 
+void configure_titlebar() {
+  constexpr DWORD dark_mode_attribute = 20;
+  constexpr DWORD caption_color_attribute = 35;
+  constexpr DWORD text_color_attribute = 36;
+  BOOL dark = TRUE;
+  DwmSetWindowAttribute(window_handle, dark_mode_attribute, &dark, sizeof(dark));
+  if (titlebar_color) DwmSetWindowAttribute(window_handle, caption_color_attribute, &*titlebar_color, sizeof(COLORREF));
+  if (titlebar_text_color) DwmSetWindowAttribute(window_handle, text_color_attribute, &*titlebar_text_color, sizeof(COLORREF));
+}
+
 void create_webview() {
   const auto user_data = data_dir / L"WebView2";
   std::error_code error;
@@ -560,6 +585,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       storage_mode = arguments[++index];
     } else if (argument == L"--data-dir" && index + 1 < argument_count) {
       data_dir_override = arguments[++index];
+    } else if (argument == L"--titlebar-color" && index + 1 < argument_count) {
+      titlebar_color = color_from_hex(arguments[++index]);
+    } else if (argument == L"--titlebar-text-color" && index + 1 < argument_count) {
+      titlebar_text_color = color_from_hex(arguments[++index]);
     } else if (argument == L"--devtools") {
       devtools = true;
     }
@@ -583,6 +612,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
 
   WNDCLASSW window_class{};
   window_class.hInstance = instance;
+  window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_TINY_ICON));
   window_class.lpfnWndProc = window_proc;
   window_class.lpszClassName = L"TinyWindow";
   window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -591,6 +621,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   window_handle = CreateWindowW(window_class.lpszClassName, app_name.c_str(), WS_OVERLAPPEDWINDOW,
       CW_USEDEFAULT, CW_USEDEFAULT, 1200, 800, nullptr, nullptr, instance, nullptr);
   if (!window_handle) return 1;
+  configure_titlebar();
   ShowWindow(window_handle, SW_SHOW);
 
   const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

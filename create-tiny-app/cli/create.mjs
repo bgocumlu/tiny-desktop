@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -23,6 +23,7 @@ function runInstall(target) {
 }
 
 async function copyTemplate(sourceRoot, target, appName) {
+  const binaryExtensions = new Set(['.ico', '.png', '.jpg', '.jpeg', '.gif', '.webp']);
   const entries = await readdir(sourceRoot, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === 'package.json') continue;
@@ -32,8 +33,11 @@ async function copyTemplate(sourceRoot, target, appName) {
       await mkdir(destination, { recursive: true });
       await copyTemplate(source, destination, appName);
     } else {
-      const contents = (await readFile(source, 'utf8')).replaceAll('__TINY_APP_NAME__', appName);
-      await writeFile(destination, contents);
+      const contents = await readFile(source);
+      const output = binaryExtensions.has(extname(entry.name).toLowerCase())
+        ? contents
+        : contents.toString('utf8').replaceAll('__TINY_APP_NAME__', appName);
+      await writeFile(destination, output);
     }
   }
 }

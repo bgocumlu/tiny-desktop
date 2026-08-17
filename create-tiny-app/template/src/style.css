@@ -22,6 +22,8 @@ button { font: inherit; }
 .toolbar-button:hover { border-color: #555; background: #3a3a3a; }
 .toolbar-button.primary { border-color: #3a96dd; color: #fff; background: #256da5; }
 .toolbar-button.primary:hover { background: #2d82c2; }
+.toolbar-button:disabled { border-color: transparent; color: #777; background: transparent; cursor: default; }
+.toolbar-button.primary:disabled { border-color: #464646; color: #8a8a8a; background: #373737; }
 .toolbar-button:focus-visible { outline: 2px solid #78c7f5; outline-offset: 2px; }
 
 .workspace { display: grid; min-height: 0; grid-template-columns: 176px 1fr; }

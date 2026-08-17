@@ -8,10 +8,16 @@
   "files": [
     "cli",
     "runtime",
-    "types"
+    "types",
+    "native/CMakeLists.txt",
+    "native/main.cpp",
+    "native/resource.h",
+    "native/tiny.ico",
+    "native/tiny.rc"
   ],
   "scripts": {
     "check": "node cli/tiny.mjs check",
+    "test": "node tests/e2e.mjs",
     "stage-runtime": "node cli/tiny.mjs stage-runtime",
     "pack:local": "node cli/tiny.mjs stage-runtime && npm pack --pack-destination .local-packages",
     "pack:create-local": "npm pack ./create-tiny-app --pack-destination .local-packages"

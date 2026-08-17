@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDI_TINY_ICON ICON "tiny.ico"
