@@ -7,14 +7,50 @@
     <title>__TINY_APP_NAME__</title>
   </head>
   <body>
-    <main>
-      <p class="eyebrow">Tiny desktop app</p>
-      <h1>__TINY_APP_NAME__</h1>
-      <p id="status">Starting…</p>
-      <button id="save">Save JSON</button>
-      <button id="load">Load JSON</button>
-      <pre id="output"></pre>
-    </main>
+    <div class="app-shell">
+      <header class="toolbar">
+        <div class="app-identity">
+          <div>
+            <strong>__TINY_APP_NAME__</strong>
+            <span>Desktop workspace</span>
+          </div>
+        </div>
+        <div class="toolbar-actions" aria-label="Data actions">
+          <button id="load" class="toolbar-button" type="button">Load</button>
+          <button id="save" class="toolbar-button primary" type="button">Save</button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <span class="sidebar-label">Workspace</span>
+          <div class="nav-item selected">JSON store</div>
+        </aside>
+
+        <main class="content">
+          <header class="content-heading">
+            <div>
+              <span class="eyebrow">DATA STORE</span>
+              <h1>main.json</h1>
+            </div>
+            <span class="state">Local</span>
+          </header>
+
+          <section class="panel" aria-labelledby="stored-data-title">
+            <div class="panel-heading">
+              <h2 id="stored-data-title">Stored data</h2>
+              <p>Save a small JSON document and load it again from disk.</p>
+            </div>
+            <pre id="output">No data loaded.</pre>
+          </section>
+        </main>
+      </div>
+
+      <footer class="statusbar">
+        <span id="status">Starting…</span>
+        <span>JSON storage</span>
+      </footer>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

@@ -1,7 +1,6 @@
 {
   "name": "tiny-desktop-mvp",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "bin": {
     "tiny": "cli/tiny.mjs"
@@ -12,8 +11,6 @@
     "types"
   ],
   "scripts": {
-    "dev": "node cli/tiny.mjs dev",
-    "build": "node cli/tiny.mjs build",
     "check": "node cli/tiny.mjs check",
     "stage-runtime": "node cli/tiny.mjs stage-runtime",
     "pack:local": "node cli/tiny.mjs stage-runtime && npm pack --pack-destination .local-packages",
@@ -21,8 +18,5 @@
   },
   "engines": {
     "node": ">=20"
-  },
-  "devDependencies": {
-    "vite": "^8.2.1"
   }
 }
