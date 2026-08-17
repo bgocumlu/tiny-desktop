@@ -4,6 +4,7 @@ export default {
     // Replace assets/icon.ico with your own Windows icon.
     icon: './assets/icon.ico'
   },
+  package: 'standalone',
   storage: {
     mode: 'appData'
   },

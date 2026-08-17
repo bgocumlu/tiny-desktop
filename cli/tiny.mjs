@@ -9,6 +9,8 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const projectRoot = resolve(process.cwd());
 const nativeBuild = join(packageRoot, 'native', 'build');
 const runtime = join(packageRoot, 'runtime', 'win32-x64', 'tiny-host.exe');
+const nsis = join(packageRoot, 'runtime', 'win32-x64', 'nsis', 'Bin', 'makensis.exe');
+const webviewBootstrapper = join(packageRoot, 'runtime', 'win32-x64', 'installer', 'MicrosoftEdgeWebView2Setup.exe');
 const release = join(projectRoot, 'release');
 const vite = join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
 
@@ -26,7 +28,7 @@ function run(command, args, options = {}) {
 
 async function loadConfig() {
   const configPath = join(projectRoot, 'tiny.config.js');
-  const defaults = { app: { name: basename(projectRoot) }, storage: { mode: 'appData' }, window: { titleBar: {} } };
+  const defaults = { app: { name: basename(projectRoot) }, package: 'standalone', storage: { mode: 'appData' }, window: { titleBar: {} } };
   try {
     await stat(configPath);
   } catch {
@@ -34,6 +36,10 @@ async function loadConfig() {
   }
   const loaded = await import(`${pathToFileURL(configPath).href}?v=${Date.now()}`);
   const config = loaded.default ?? loaded;
+  const packageMode = config.package ?? defaults.package;
+  if (packageMode !== 'standalone' && packageMode !== 'installer') {
+    throw new Error("tiny.config.js package must be 'standalone' or 'installer'.");
+  }
   const mode = config.storage?.mode ?? defaults.storage.mode;
   if (mode !== 'appData' && mode !== 'portable') throw new Error("tiny.config.js storage.mode must be 'appData' or 'portable'.");
   const icon = config.app?.icon ? resolve(projectRoot, String(config.app.icon)) : undefined;
@@ -46,6 +52,7 @@ async function loadConfig() {
   return {
     ...defaults,
     ...config,
+    package: packageMode,
     app: { ...defaults.app, ...config.app, name: String(config.app?.name ?? defaults.app.name), icon },
     storage: { mode },
     window: { ...defaults.window, ...config.window, titleBar: { ...defaults.window.titleBar, ...config.window?.titleBar } }
@@ -64,6 +71,18 @@ async function requireRuntime() {
   }
   await stat(runtime).catch(() => {
     throw new Error('The Windows runtime is missing. Run npm run stage-runtime in the Tiny repository.');
+  });
+}
+
+async function requireInstaller() {
+  if (process.platform !== 'win32' || process.arch !== 'x64') {
+    throw new Error('Tiny V1 installer currently supports Windows x64 only.');
+  }
+  await stat(nsis).catch(() => {
+    throw new Error('The Tiny NSIS toolchain is missing from the runtime package.');
+  });
+  await stat(webviewBootstrapper).catch(() => {
+    throw new Error('The WebView2 bootstrapper is missing from the runtime package.');
   });
 }
 
@@ -184,10 +203,172 @@ async function bundleRuntime(host, dist, output, config) {
   await writeFile(output, Buffer.concat([hostBytes, header, manifest, payload, footer]));
 }
 
-async function buildApp() {
+function nsisString(value) {
+  return String(value)
+    .replaceAll('$', '$$')
+    .replaceAll('"', '$\\"')
+    .replace(/[\r\n]/g, ' ');
+}
+
+function installerScript(config, executable, output, icon) {
+  const appName = nsisString(config.app.name);
+  const appFile = nsisString(executable);
+  const installerFile = nsisString(output);
+  const bootstrapperFile = nsisString(webviewBootstrapper);
+  const iconLine = icon ? `Icon "${nsisString(icon)}"\nUninstallIcon "${nsisString(icon)}"` : '';
+  const uninstallKey = `Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${appName}`;
+  const installDir = `$LOCALAPPDATA\\Programs\\${appName}`;
+  const executableName = nsisString(executable.split(/[\\/]/).pop());
+
+  return `Unicode True
+!include nsDialogs.nsh
+!include WinMessages.nsh
+Name "${appName}"
+Caption "${appName} Setup"
+OutFile "${installerFile}"
+InstallDir "${installDir}"
+InstallDirRegKey HKCU "${uninstallKey}" "InstallLocation"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+${iconLine}
+BrandingText "${appName}"
+Page custom WebView2PageCreate WebView2PageLeave
+PageEx directory
+  PageCallbacks "" DirectoryPageShow ""
+PageExEnd
+Page instfiles
+UninstPage custom un.UninstallPageCreate un.UninstallPageLeave
+UninstPage instfiles
+
+Var WebView2Version
+Var WebView2Result
+Var WebView2InstallButton
+Var WebView2Status
+Var DeleteDataCheckbox
+Var DeleteDataState
+
+Function IsWebView2Installed
+  StrCpy $WebView2Result 0
+  SetRegView 64
+  ReadRegStr $WebView2Version HKLM "SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  StrCmp $WebView2Version "" +2 0
+    StrCpy $WebView2Result 1
+  StrCmp $WebView2Result 1 webview_registry_done
+  ReadRegStr $WebView2Version HKCU "Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  StrCmp $WebView2Version "" +2 0
+    StrCpy $WebView2Result 1
+  SetRegView 32
+  StrCmp $WebView2Result 1 webview_registry_done
+  ReadRegStr $WebView2Version HKLM "SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  StrCmp $WebView2Version "" +2 0
+    StrCpy $WebView2Result 1
+  StrCmp $WebView2Result 1 webview_registry_done
+  ReadRegStr $WebView2Version HKCU "Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  StrCmp $WebView2Version "" +2 0
+    StrCpy $WebView2Result 1
+webview_registry_done:
+FunctionEnd
+
+Function WebView2PageCreate
+  Call IsWebView2Installed
+  StrCmp $WebView2Result 1 webview_page_skip
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\\MicrosoftEdgeWebView2Setup.exe "${bootstrapperFile}"
+  nsDialogs::Create 1018
+  Pop $0
+  \${NSD_CreateLabel} 0 0 100% 24u "${appName} requires Microsoft Edge WebView2 Runtime to run."
+  Pop $0
+  \${NSD_CreateLabel} 0 28u 100% 36u "WebView2 was not found on this computer. Install it before continuing."
+  Pop $0
+  \${NSD_CreateButton} 0 76u 110u 14u "Install WebView2"
+  Pop $WebView2InstallButton
+  \${NSD_OnClick} $WebView2InstallButton WebView2Install
+  \${NSD_CreateLabel} 0 104u 100% 28u ""
+  Pop $WebView2Status
+  nsDialogs::Show
+  Return
+
+webview_page_skip:
+  Abort
+FunctionEnd
+
+Function WebView2Install
+  EnableWindow $WebView2InstallButton 0
+  ExecWait '"$PLUGINSDIR\\MicrosoftEdgeWebView2Setup.exe" /install' $0
+  Call IsWebView2Installed
+  StrCmp $WebView2Result 1 webview_install_success
+  \${NSD_SetText} $WebView2Status "WebView2 was not installed. Try again or click Cancel."
+  EnableWindow $WebView2InstallButton 1
+  Return
+
+webview_install_success:
+  \${NSD_SetText} $WebView2Status "WebView2 is installed. Click Next to continue."
+FunctionEnd
+
+Function WebView2PageLeave
+  Call IsWebView2Installed
+  StrCmp $WebView2Result 1 webview_page_ready
+  MessageBox MB_ICONEXCLAMATION|MB_OK "${appName} cannot run without Microsoft Edge WebView2 Runtime."
+  Abort
+
+webview_page_ready:
+FunctionEnd
+
+Function DirectoryPageShow
+  GetDlgItem $0 $HWNDPARENT 3
+  ShowWindow $0 \${SW_HIDE}
+FunctionEnd
+
+Function un.UninstallPageCreate
+  nsDialogs::Create 1018
+  Pop $0
+  \${NSD_CreateLabel} 0 0 100% 24u "This wizard will uninstall ${appName}."
+  Pop $0
+  \${NSD_CreateLabel} 0 28u 100% 32u "Uninstalling from: $INSTDIR"
+  Pop $0
+  \${NSD_CreateCheckbox} 0 72u 100% 14u "Delete all ${appName} data"
+  Pop $DeleteDataCheckbox
+  nsDialogs::Show
+FunctionEnd
+
+Function un.UninstallPageLeave
+  \${NSD_GetState} $DeleteDataCheckbox $DeleteDataState
+FunctionEnd
+
+Section
+  SetOutPath "$INSTDIR"
+  File "${appFile}"
+
+  WriteUninstaller "$INSTDIR\\Uninstall.exe"
+  WriteRegStr HKCU "${uninstallKey}" "DisplayName" "${appName}"
+  WriteRegStr HKCU "${uninstallKey}" "DisplayIcon" "$INSTDIR\\${executableName}"
+  WriteRegStr HKCU "${uninstallKey}" "UninstallString" "$INSTDIR\\Uninstall.exe"
+  WriteRegStr HKCU "${uninstallKey}" "InstallLocation" "$INSTDIR"
+  CreateDirectory "$SMPROGRAMS\\${appName}"
+  CreateShortcut "$SMPROGRAMS\\${appName}\\${appName}.lnk" "$INSTDIR\\${executableName}"
+  CreateShortcut "$DESKTOP\\${appName}.lnk" "$INSTDIR\\${executableName}"
+SectionEnd
+
+Section "Uninstall"
+  Delete "$DESKTOP\\${appName}.lnk"
+  Delete "$SMPROGRAMS\\${appName}\\${appName}.lnk"
+  RMDir "$SMPROGRAMS\\${appName}"
+  Delete "$INSTDIR\\${executableName}"
+  Delete "$INSTDIR\\Uninstall.exe"
+  RMDir "$INSTDIR"
+  StrCmp $DeleteDataState 1 delete_app_data keep_app_data
+delete_app_data:
+  RMDir /r "$LOCALAPPDATA\\${appName}"
+  RMDir /r "$APPDATA\\${appName}"
+keep_app_data:
+  DeleteRegKey HKCU "${uninstallKey}"
+SectionEnd
+`;
+}
+
+async function buildStandalone(config) {
   await requireVite();
   await requireRuntime();
-  const config = await loadConfig();
   await run(process.execPath, [vite, 'build']);
   await mkdir(release, { recursive: true });
   const filename = (config.app.name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Tiny') + '.exe';
@@ -205,6 +386,31 @@ async function buildApp() {
     if (iconHost) await rm(iconHost, { force: true });
   }
   console.log(`Built release/${filename} with embedded Vite assets.`);
+  return output;
+}
+
+async function buildInstaller(executable, config) {
+  await requireInstaller();
+  const output = join(release, `${basename(executable, '.exe')}-setup.exe`);
+  const script = join(release, '.tiny-installer.nsi');
+  const icon = config.app.icon ? join(release, '.tiny-installer.ico') : undefined;
+  if (icon) await cp(config.app.icon, icon);
+  await rm(output, { force: true });
+  await writeFile(script, installerScript(config, executable, output, icon));
+  try {
+    await run(nsis, [script], { cwd: release, windowsHide: true });
+  } finally {
+    await rm(script, { force: true });
+    if (icon) await rm(icon, { force: true });
+  }
+  console.log(`Built release/${basename(output)} with NSIS.`);
+  return output;
+}
+
+async function buildApp() {
+  const config = await loadConfig();
+  const executable = await buildStandalone(config);
+  if (config.package === 'installer') await buildInstaller(executable, config);
 }
 
 async function check() {

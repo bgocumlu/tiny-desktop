@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -87,6 +87,28 @@ try {
   assert.ok(bundle.includes('TINYBND1'), 'The executable is missing the bundle header.');
   assert.ok(bundle.includes('TINYEND1'), 'The executable is missing the bundle footer.');
 
+  const configPath = join(projectRoot, 'tiny.config.js');
+  const config = await readFile(configPath, 'utf8');
+  await writeFile(configPath, config.replace("package: 'standalone'", "package: 'installer'"));
+  run(['run', 'build'], projectRoot, npmOnlyEnv);
+  const installer = join(projectRoot, 'release', `${appName}-setup.exe`);
+  assert.equal(await exists(installer), true, 'The NSIS installer was not created.');
+  assert.ok((await stat(installer)).size > 100 * 1024, 'The installer is unexpectedly small.');
+  const installedRoot = join(projectRoot, 'installed');
+  const installResult = spawnSync(installer, ['/S', `/D=${installedRoot}`], {
+    cwd: projectRoot,
+    stdio: 'inherit',
+    windowsHide: true
+  });
+  assert.equal(installResult.status, 0, 'The NSIS installer failed.');
+  assert.equal(await exists(join(installedRoot, `${appName}.exe`)), true, 'The installer did not install the app.');
+  const uninstallResult = spawnSync(join(installedRoot, 'Uninstall.exe'), ['/S'], {
+    cwd: installedRoot,
+    stdio: 'inherit',
+    windowsHide: true
+  });
+  assert.equal(uninstallResult.status, 0, 'The NSIS uninstaller failed.');
+
   host = spawn(executable, [], { cwd: projectRoot, stdio: 'ignore', windowsHide: false });
   await new Promise((resolvePromise, reject) => {
     const timer = setTimeout(resolvePromise, 1000);
@@ -99,7 +121,7 @@ try {
   await waitFor(() => exists(webviewRoot));
 
   passed = true;
-  console.log('E2E passed: create, install, build, bundle, launch, and WebView2 initialization.');
+  console.log('E2E passed: create, install, standalone build, NSIS install/uninstall, launch, and WebView2 initialization.');
 } finally {
   if (host && host.exitCode === null) {
     spawnSync('taskkill.exe', ['/PID', String(host.pid), '/T', '/F'], {
