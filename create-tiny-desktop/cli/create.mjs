@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const templateRoot = join(packageRoot, 'template');
+const usage = 'Usage: npx create-tiny-desktop <directory> [--no-install]';
 
 function slug(value) {
   return value.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'tiny-app';
@@ -45,11 +46,16 @@ async function copyTemplate(sourceRoot, target, appName) {
 async function create() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: npm create tiny-desktop <directory> [--no-install]');
+    console.log(usage);
     return;
   }
+  const options = args.filter(arg => arg.startsWith('-'));
+  const directories = args.filter(arg => !arg.startsWith('-'));
+  const unknownOption = options.find(option => option !== '--no-install');
+  if (unknownOption) throw new Error(`Unknown option: ${unknownOption}\n\n${usage}`);
+  if (directories.length !== 1) throw new Error(`A target directory is required.\n\n${usage}`);
   const noInstall = args.includes('--no-install');
-  const targetArg = args.find(arg => !arg.startsWith('-')) ?? '.';
+  const targetArg = directories[0];
   const target = resolve(process.cwd(), targetArg);
   const appName = basename(target);
   const packageName = slug(appName);
@@ -77,6 +83,6 @@ async function create() {
 }
 
 create().catch(error => {
-  console.error(error.message);
+  console.error(`Error: ${error.message}`);
   process.exitCode = 1;
 });

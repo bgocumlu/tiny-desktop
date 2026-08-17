@@ -67,6 +67,15 @@ try {
   const runtimePath = resolve(repoRoot, '.local-packages', 'tiny-desktop-0.1.0.tgz').replaceAll('\\', '/');
   const env = { ...process.env, TINY_RUNTIME_PACKAGE: `file:${runtimePath}` };
   const createPackage = './.local-packages/create-tiny-desktop-0.1.0.tgz';
+  const invalidCreate = spawnSync(process.execPath, [npmCli, 'exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-desktop'], {
+    cwd: repoRoot,
+    env,
+    encoding: 'utf8',
+    windowsHide: true
+  });
+  assert.notEqual(invalidCreate.status, 0, 'The initializer accepted a missing directory.');
+  assert.match(`${invalidCreate.stdout}\n${invalidCreate.stderr}`, /A target directory is required/);
+  assert.match(`${invalidCreate.stdout}\n${invalidCreate.stderr}`, /Usage: npx create-tiny-desktop <directory>/);
   run(['exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-desktop', projectRoot], repoRoot, env);
 
   for (const path of ['package.json', '.gitignore', 'index.html', 'src/main.js', 'src/style.css', 'tiny.config.js', 'assets/icon.ico']) {
