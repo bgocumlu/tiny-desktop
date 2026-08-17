@@ -1,5 +1,5 @@
 {
-  "name": "tiny-desktop-mvp",
+  "name": "tiny-desktop",
   "version": "0.1.0",
   "type": "module",
   "bin": {
@@ -18,7 +18,7 @@
     "test": "node tests/e2e.mjs",
     "stage-runtime": "node cli/tiny.mjs stage-runtime",
     "pack:local": "node cli/tiny.mjs stage-runtime && npm pack --pack-destination .local-packages",
-    "pack:create-local": "npm pack ./create-tiny-app --pack-destination .local-packages"
+    "pack:create-local": "npm pack ./create-tiny-desktop --pack-destination .local-packages"
   },
   "engines": {
     "node": ">=20"

@@ -495,7 +495,7 @@ async function buildApp() {
 
 async function check() {
   await run(process.execPath, ['--check', 'cli/tiny.mjs'], { cwd: packageRoot });
-  await run(process.execPath, ['--check', 'create-tiny-app/cli/create.mjs'], { cwd: packageRoot });
+  await run(process.execPath, ['--check', 'create-tiny-desktop/cli/create.mjs'], { cwd: packageRoot });
   await stageRuntime();
   console.log('Checks passed.');
 }

@@ -64,10 +64,10 @@ try {
   run(['run', 'pack:local'], repoRoot);
   run(['run', 'pack:create-local'], repoRoot);
 
-  const runtimePath = resolve(repoRoot, '.local-packages', 'tiny-desktop-mvp-0.1.0.tgz').replaceAll('\\', '/');
+  const runtimePath = resolve(repoRoot, '.local-packages', 'tiny-desktop-0.1.0.tgz').replaceAll('\\', '/');
   const env = { ...process.env, TINY_RUNTIME_PACKAGE: `file:${runtimePath}` };
-  const createPackage = './.local-packages/create-tiny-app-0.1.0.tgz';
-  run(['exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-app', projectRoot], repoRoot, env);
+  const createPackage = './.local-packages/create-tiny-desktop-0.1.0.tgz';
+  run(['exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-desktop', projectRoot], repoRoot, env);
 
   for (const path of ['package.json', '.gitignore', 'index.html', 'src/main.js', 'src/style.css', 'tiny.config.js', 'assets/icon.ico']) {
     assert.equal(await exists(join(projectRoot, path)), true, `Missing generated file: ${path}`);

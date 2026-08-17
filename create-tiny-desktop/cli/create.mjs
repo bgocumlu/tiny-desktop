@@ -45,7 +45,7 @@ async function copyTemplate(sourceRoot, target, appName) {
 async function create() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: npm create tiny-app <directory> [--no-install]');
+    console.log('Usage: npm create tiny-desktop <directory> [--no-install]');
     return;
   }
   const noInstall = args.includes('--no-install');
@@ -67,7 +67,7 @@ async function create() {
     private: true,
     type: 'module',
     scripts: { dev: 'tiny dev', build: 'tiny build' },
-    devDependencies: { 'tiny-desktop-mvp': runtimePackage, vite: '^8.2.1' }
+    devDependencies: { 'tiny-desktop': runtimePackage, vite: '^8.2.1' }
   }, null, 2) + '\n');
 
   if (!noInstall) await runInstall(target);
