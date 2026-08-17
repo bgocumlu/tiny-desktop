@@ -1,0 +1,16 @@
+{
+  "name": "create-tiny-app",
+  "version": "0.1.0",
+  "description": "Create an opinionated Tiny desktop app",
+  "type": "module",
+  "bin": {
+    "create-tiny-app": "cli/create.mjs"
+  },
+  "files": [
+    "cli",
+    "template"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

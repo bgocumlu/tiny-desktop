@@ -1,17 +1,19 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <Shlwapi.h>
 #include <wrl.h>
 #include <WebView2.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cwctype>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <optional>
 #include <string>
+#include <vector>
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -19,34 +21,38 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 HWND window_handle = nullptr;
+ComPtr<ICoreWebView2Environment> web_environment;
 ComPtr<ICoreWebView2Controller> controller;
 ComPtr<ICoreWebView2> webview;
 ComPtr<ICoreWebView2_3> webview3;
+std::filesystem::path executable_path;
 std::filesystem::path executable_dir;
 std::filesystem::path app_dir;
 std::filesystem::path data_dir;
+std::wstring app_name = L"Tiny";
+std::wstring storage_mode = L"appData";
+std::wstring data_dir_override;
 std::wstring allowed_origin;
 std::wstring start_url;
+std::wstring bundle_manifest;
+std::vector<std::uint8_t> bundle_bytes;
+std::uint64_t bundle_data_start = 0;
+std::uint64_t bundle_data_end = 0;
 bool development = false;
 bool devtools = false;
+bool bundled = false;
 
-std::filesystem::path module_dir() {
+std::filesystem::path module_path() {
   std::wstring value(MAX_PATH, L'\0');
   for (;;) {
     const DWORD length = GetModuleFileNameW(nullptr, value.data(), static_cast<DWORD>(value.size()));
     if (!length) return {};
     if (length < value.size() - 1) {
       value.resize(length);
-      return std::filesystem::path(value).parent_path();
+      return std::filesystem::path(value);
     }
     value.resize(value.size() * 2);
   }
-}
-
-std::filesystem::path roaming_data_dir() {
-  wchar_t value[MAX_PATH]{};
-  if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, value))) return {};
-  return std::filesystem::path(value) / L"Tiny";
 }
 
 std::wstring lower(std::wstring value) {
@@ -54,16 +60,21 @@ std::wstring lower(std::wstring value) {
   return value;
 }
 
-bool is_data_path(const std::filesystem::path& value) {
-  std::error_code error;
-  const auto root = std::filesystem::weakly_canonical(data_dir, error);
-  if (error) return false;
-  const auto candidate = std::filesystem::weakly_canonical(value.is_relative() ? data_dir / value : value, error);
-  if (error) return false;
-  auto root_text = lower(root.wstring());
-  auto candidate_text = lower(candidate.wstring());
-  const auto root_prefix = root_text.back() == L'\\' ? root_text : root_text + L'\\';
-  return candidate_text == root_text || candidate_text.rfind(root_prefix, 0) == 0;
+std::wstring safe_name(std::wstring value) {
+  for (auto& character : value) {
+    if (character == L'<' || character == L'>' || character == L':' || character == L'\"' ||
+        character == L'/' || character == L'\\' || character == L'|' || character == L'?' || character == L'*') {
+      character = L'-';
+    }
+  }
+  while (!value.empty() && (value.back() == L'.' || value.back() == L' ')) value.pop_back();
+  return value.empty() ? L"Tiny" : value;
+}
+
+std::filesystem::path roaming_data_dir() {
+  wchar_t value[MAX_PATH]{};
+  if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, value))) return {};
+  return std::filesystem::path(value) / safe_name(app_name);
 }
 
 std::wstring utf8_to_wide(const std::string& value) {
@@ -84,37 +95,83 @@ std::string wide_to_utf8(const std::wstring& value) {
   return result;
 }
 
-std::optional<std::wstring> json_string(const std::wstring& json, const std::wstring& key) {
+std::optional<std::wstring> json_raw_value(const std::wstring& json, const std::wstring& key, std::size_t from = 0) {
   const std::wstring needle = L"\"" + key + L"\"";
-  const auto key_position = json.find(needle);
+  const auto key_position = json.find(needle, from);
   if (key_position == std::wstring::npos) return std::nullopt;
   auto position = json.find(L':', key_position + needle.size());
   if (position == std::wstring::npos) return std::nullopt;
   while (++position < json.size() && iswspace(json[position])) {}
-  if (position >= json.size() || json[position] != L'\"') return std::nullopt;
+  if (position >= json.size()) return std::nullopt;
+  const auto start = position;
+  if (json[position] == L'\"') {
+    for (++position; position < json.size(); ++position) {
+      if (json[position] == L'\\') {
+        ++position;
+      } else if (json[position] == L'\"') {
+        return json.substr(start, position - start + 1);
+      }
+    }
+    return std::nullopt;
+  }
+  if (json[position] == L'{' || json[position] == L'[') {
+    const wchar_t opening = json[position];
+    const wchar_t closing = opening == L'{' ? L'}' : L']';
+    int depth = 0;
+    bool quoted = false;
+    for (; position < json.size(); ++position) {
+      if (json[position] == L'\\' && quoted) {
+        ++position;
+      } else if (json[position] == L'\"') {
+        quoted = !quoted;
+      } else if (!quoted && json[position] == opening) {
+        ++depth;
+      } else if (!quoted && json[position] == closing && --depth == 0) {
+        return json.substr(start, position - start + 1);
+      }
+    }
+    return std::nullopt;
+  }
+  while (position < json.size() && json[position] != L',' && json[position] != L'}') ++position;
+  auto end = position;
+  while (end > start && iswspace(json[end - 1])) --end;
+  return end == start ? std::nullopt : std::optional<std::wstring>(json.substr(start, end - start));
+}
+
+std::optional<std::wstring> json_string(const std::wstring& json, const std::wstring& key, std::size_t from = 0) {
+  const auto raw = json_raw_value(json, key, from);
+  if (!raw || raw->size() < 2 || raw->front() != L'\"' || raw->back() != L'\"') return std::nullopt;
   std::wstring value;
-  for (++position; position < json.size(); ++position) {
-    const wchar_t character = json[position];
-    if (character == L'\"') return value;
-    if (character != L'\\') {
-      value += character;
+  for (std::size_t index = 1; index + 1 < raw->size(); ++index) {
+    if ((*raw)[index] != L'\\') {
+      value += (*raw)[index];
       continue;
     }
-    if (++position >= json.size()) return std::nullopt;
-    const wchar_t escaped = json[position];
+    if (++index + 1 >= raw->size()) return std::nullopt;
+    const wchar_t escaped = (*raw)[index];
     if (escaped == L'\"' || escaped == L'\\' || escaped == L'/') value += escaped;
     else if (escaped == L'b') value += L'\b';
     else if (escaped == L'f') value += L'\f';
     else if (escaped == L'n') value += L'\n';
     else if (escaped == L'r') value += L'\r';
     else if (escaped == L't') value += L'\t';
-    else if (escaped == L'u' && position + 4 < json.size()) {
-      wchar_t code[5] = {json[position + 1], json[position + 2], json[position + 3], json[position + 4], L'\0'};
+    else if (escaped == L'u' && index + 4 < raw->size()) {
+      wchar_t code[5] = {(*raw)[index + 1], (*raw)[index + 2], (*raw)[index + 3], (*raw)[index + 4], L'\0'};
       value += static_cast<wchar_t>(wcstoul(code, nullptr, 16));
-      position += 4;
+      index += 4;
     } else return std::nullopt;
   }
-  return std::nullopt;
+  return value;
+}
+
+std::optional<std::uint64_t> json_number(const std::wstring& json, const std::wstring& key, std::size_t from) {
+  const auto raw = json_raw_value(json, key, from);
+  if (!raw) return std::nullopt;
+  try {
+    return std::stoull(*raw);
+  } catch (...) {
+    return std::nullopt;
+  }
 }
 
 std::wstring json_quote(const std::wstring& value) {
@@ -128,12 +185,7 @@ std::wstring json_quote(const std::wstring& value) {
       case L'\n': result += L"\\n"; break;
       case L'\r': result += L"\\r"; break;
       case L'\t': result += L"\\t"; break;
-      default:
-        if (character < 0x20) {
-          wchar_t escaped[7]{};
-          swprintf_s(escaped, _countof(escaped), L"\\u%04x", static_cast<unsigned>(character));
-          result += escaped;
-        } else result += character;
+      default: result += character;
     }
   }
   return result + L"\"";
@@ -143,34 +195,51 @@ void send(const std::wstring& value) {
   if (webview) webview->PostWebMessageAsString(value.c_str());
 }
 
-void result_string(const std::wstring& id, const std::wstring& value) {
-  send(L"{\"id\":" + json_quote(id) + L",\"result\":" + json_quote(value) + L"}");
-}
-
-void result_bool(const std::wstring& id, bool value) {
-  send(L"{\"id\":" + json_quote(id) + L",\"result\":" + (value ? L"true" : L"false") + L"}");
+void result_raw(const std::wstring& id, const std::wstring& value) {
+  send(L"{\"id\":" + json_quote(id) + L",\"result\":" + value + L"}");
 }
 
 void result_empty(const std::wstring& id) {
-  send(L"{\"id\":" + json_quote(id) + L",\"result\":null}");
+  result_raw(id, L"null");
+}
+
+void result_string(const std::wstring& id, const std::wstring& value) {
+  result_raw(id, json_quote(value));
 }
 
 void result_error(const std::wstring& id, const std::wstring& code, const std::wstring& message) {
   send(L"{\"id\":" + json_quote(id) + L",\"error\":{\"code\":" + json_quote(code) + L",\"message\":" + json_quote(message) + L"}}");
 }
 
-std::optional<std::filesystem::path> requested_path(const std::wstring& id, const std::wstring& json) {
-  const auto value = json_string(json, L"path");
-  if (!value || value->empty()) {
-    result_error(id, L"INVALID_PATH", L"A path is required.");
+bool valid_store(const std::wstring& store) {
+  return !store.empty() && store.size() <= 64 && std::all_of(store.begin(), store.end(), [](wchar_t character) {
+    return iswalnum(character) || character == L'_' || character == L'-';
+  });
+}
+
+std::optional<std::filesystem::path> store_path(const std::wstring& id, const std::wstring& json) {
+  const auto store = json_string(json, L"store");
+  if (!store || !valid_store(*store)) {
+    result_error(id, L"INVALID_STORE", L"Store names may contain only letters, numbers, hyphens, and underscores.");
     return std::nullopt;
   }
-  const auto path = std::filesystem::path(*value);
-  if (!is_data_path(path)) {
-    result_error(id, L"PATH_DENIED", L"The path must stay inside the application data directory.");
-    return std::nullopt;
+  return data_dir / (*store + L".json");
+}
+
+void write_store(const std::wstring& id, const std::filesystem::path& path, const std::wstring& value) {
+  const auto bytes = wide_to_utf8(value);
+  if (!value.empty() && bytes.empty()) return result_error(id, L"INVALID_JSON", L"The JSON value is not valid UTF-8.");
+  // ponytail: one fixed temp file assumes one app writer; unique temp names can come later if needed.
+  const auto temporary = std::filesystem::path(path.wstring() + L".tmp");
+  std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+  if (!output) return result_error(id, L"WRITE_FAILED", L"The JSON store could not be opened.");
+  output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  output.close();
+  if (!output || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(temporary.c_str());
+    return result_error(id, L"WRITE_FAILED", L"The JSON store could not be saved.");
   }
-  return path;
+  result_empty(id);
 }
 
 void handle_message(const std::wstring& json) {
@@ -179,8 +248,6 @@ void handle_message(const std::wstring& json) {
   if (!id || !method) return;
 
   if (*method == L"app.getDataPath") return result_string(*id, data_dir.wstring());
-  if (*method == L"app.getExecutablePath") return result_string(*id, executable_dir.wstring());
-
   if (*method == L"window.close") {
     PostMessageW(window_handle, WM_CLOSE, 0, 0);
     return result_empty(*id);
@@ -193,7 +260,6 @@ void handle_message(const std::wstring& json) {
     ShowWindow(window_handle, SW_MAXIMIZE);
     return result_empty(*id);
   }
-
   if (*method == L"shell.openExternal") {
     const auto url = json_string(json, L"url");
     if (!url || (url->rfind(L"https://", 0) != 0 && url->rfind(L"http://", 0) != 0)) {
@@ -203,53 +269,24 @@ void handle_message(const std::wstring& json) {
     if (launched <= 32) return result_error(*id, L"OPEN_FAILED", L"The system browser could not open the URL.");
     return result_empty(*id);
   }
-
-  if (*method == L"fs.exists") {
-    const auto path = requested_path(*id, json);
-    if (!path) return;
-    return result_bool(*id, std::filesystem::exists(*path));
-  }
-  if (*method == L"fs.mkdir") {
-    const auto path = requested_path(*id, json);
-    if (!path) return;
-    std::error_code error;
-    std::filesystem::create_directories(*path, error);
-    if (error) return result_error(*id, L"MKDIR_FAILED", L"The directory could not be created.");
-    return result_empty(*id);
-  }
-  if (*method == L"fs.readText") {
-    const auto path = requested_path(*id, json);
+  if (*method == L"data.read") {
+    const auto path = store_path(*id, json);
     if (!path) return;
     std::ifstream input(*path, std::ios::binary);
-    if (!input) return result_error(*id, L"FILE_NOT_FOUND", L"The requested file does not exist.");
+    if (!input) return result_empty(*id);
     const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    const auto text = utf8_to_wide(contents);
-    if (!contents.empty() && text.empty()) return result_error(*id, L"INVALID_UTF8", L"The file is not valid UTF-8 text.");
-    return result_string(*id, text);
+    const auto value = utf8_to_wide(contents);
+    if (!contents.empty() && value.empty()) return result_error(*id, L"INVALID_JSON", L"The JSON store is not valid UTF-8.");
+    return result_raw(*id, value.empty() ? L"null" : value);
   }
-  if (*method == L"fs.writeText") {
-    const auto path = requested_path(*id, json);
-    const auto content = json_string(json, L"content");
-    if (!path || !content) {
-      if (path) result_error(*id, L"INVALID_CONTENT", L"Text content is required.");
+  if (*method == L"data.write") {
+    const auto path = store_path(*id, json);
+    const auto value = json_raw_value(json, L"value");
+    if (!path || !value) {
+      if (path) result_error(*id, L"INVALID_JSON", L"A JSON value is required.");
       return;
     }
-    std::error_code error;
-    std::filesystem::create_directories(path->parent_path(), error);
-    if (error) return result_error(*id, L"MKDIR_FAILED", L"The parent directory could not be created.");
-    // ponytail: one fixed temp file assumes one app writer; use unique temp names if concurrent writers matter.
-    const auto temporary = std::filesystem::path(path->wstring() + L".tmp");
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    const auto bytes = wide_to_utf8(*content);
-    if (!output || (!content->empty() && bytes.empty())) return result_error(*id, L"WRITE_FAILED", L"The file could not be written.");
-    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    output.close();
-    if (!output) return result_error(*id, L"WRITE_FAILED", L"The file could not be written.");
-    if (!MoveFileExW(temporary.c_str(), path->c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-      DeleteFileW(temporary.c_str());
-      return result_error(*id, L"RENAME_FAILED", L"The temporary file could not be moved into place.");
-    }
-    return result_empty(*id);
+    return write_store(*id, *path, *value);
   }
 
   result_error(*id, L"METHOD_NOT_FOUND", L"The native method does not exist.");
@@ -275,25 +312,18 @@ constexpr wchar_t bridge_script[] = LR"JS(
       pendingRequest.reject(error);
     } else pendingRequest.resolve(message.result);
   });
-  window.native = Object.freeze({
-    app: {
-      getDataPath: () => request('app.getDataPath'),
-      getExecutablePath: () => request('app.getExecutablePath')
-    },
-    fs: {
-      exists: path => request('fs.exists', { path }),
-      mkdir: path => request('fs.mkdir', { path }),
-      readText: path => request('fs.readText', { path }),
-      writeText: (path, content) => request('fs.writeText', { path, content })
+  window.tiny = Object.freeze({
+    app: { getDataPath: () => request('app.getDataPath') },
+    data: {
+      read: store => request('data.read', { store }),
+      write: (store, value) => request('data.write', { store, value })
     },
     window: {
       close: () => request('window.close'),
       minimize: () => request('window.minimize'),
       maximize: () => request('window.maximize')
     },
-    shell: {
-      openExternal: url => request('shell.openExternal', { url })
-    }
+    shell: { openExternal: url => request('shell.openExternal', { url }) }
   });
 })();
 )JS";
@@ -310,10 +340,98 @@ bool same_origin(const std::wstring& url, const std::wstring& origin) {
   return url.size() == origin.size() || url[origin.size()] == L'/' || url[origin.size()] == L'?' || url[origin.size()] == L'#';
 }
 
+bool read_u64(std::size_t offset, std::uint64_t* value) {
+  if (offset + sizeof(std::uint64_t) > bundle_bytes.size()) return false;
+  std::uint64_t result = 0;
+  for (std::size_t index = 0; index < sizeof(std::uint64_t); ++index) result |= static_cast<std::uint64_t>(bundle_bytes[offset + index]) << (index * 8);
+  *value = result;
+  return true;
+}
+
+bool has_magic(std::size_t offset, const char* magic) {
+  return offset + 8 <= bundle_bytes.size() && std::equal(magic, magic + 8, bundle_bytes.begin() + offset);
+}
+
+bool load_bundle() {
+  std::ifstream input(executable_path, std::ios::binary);
+  if (!input) return false;
+  input.seekg(0, std::ios::end);
+  const auto size = input.tellg();
+  if (size < 16) return false;
+  bundle_bytes.resize(static_cast<std::size_t>(size));
+  input.seekg(0, std::ios::beg);
+  input.read(reinterpret_cast<char*>(bundle_bytes.data()), static_cast<std::streamsize>(bundle_bytes.size()));
+  const auto footer = bundle_bytes.size() - 16;
+  std::uint64_t header = 0;
+  std::uint64_t manifest_size = 0;
+  if (!has_magic(footer, "TINYEND1") || !read_u64(footer + 8, &header) || !has_magic(static_cast<std::size_t>(header), "TINYBND1") ||
+      !read_u64(static_cast<std::size_t>(header) + 8, &manifest_size)) return false;
+  const auto manifest_start = static_cast<std::size_t>(header) + 16;
+  if (manifest_start + manifest_size > footer) return false;
+  const std::string manifest(reinterpret_cast<const char*>(bundle_bytes.data() + manifest_start), static_cast<std::size_t>(manifest_size));
+  bundle_manifest = utf8_to_wide(manifest);
+  if (!manifest.empty() && bundle_manifest.empty()) return false;
+  bundle_data_start = manifest_start + manifest_size;
+  bundle_data_end = footer;
+  bundled = true;
+  if (const auto value = json_string(bundle_manifest, L"appName")) app_name = *value;
+  if (const auto value = json_string(bundle_manifest, L"storage")) storage_mode = *value;
+  return true;
+}
+
+std::optional<std::pair<std::uint64_t, std::uint64_t>> bundle_range(const std::wstring& path) {
+  const auto entry = bundle_manifest.find(L"\"path\":" + json_quote(path));
+  if (entry == std::wstring::npos) return std::nullopt;
+  const auto offset = json_number(bundle_manifest, L"offset", entry);
+  const auto size = json_number(bundle_manifest, L"size", entry);
+  if (!offset || !size || bundle_data_start + *offset + *size > bundle_data_end) return std::nullopt;
+  return std::make_pair(bundle_data_start + *offset, *size);
+}
+
+std::wstring request_path(const std::wstring& uri) {
+  const auto scheme_end = uri.find(L"://");
+  auto slash = uri.find(L'/', scheme_end == std::wstring::npos ? 0 : scheme_end + 3);
+  if (slash == std::wstring::npos || slash + 1 >= uri.size()) return L"index.html";
+  auto path = uri.substr(slash + 1);
+  const auto query = path.find_first_of(L"?#");
+  if (query != std::wstring::npos) path.resize(query);
+  return path.empty() ? L"index.html" : path;
+}
+
+std::wstring content_type(const std::wstring& path) {
+  const auto value = lower(path);
+  if (value.size() >= 5 && value.rfind(L".html") == value.size() - 5) return L"text/html; charset=utf-8";
+  if (value.size() >= 3 && value.rfind(L".js") == value.size() - 3) return L"text/javascript; charset=utf-8";
+  if (value.size() >= 4 && value.rfind(L".css") == value.size() - 4) return L"text/css; charset=utf-8";
+  if (value.size() >= 5 && value.rfind(L".json") == value.size() - 5) return L"application/json; charset=utf-8";
+  if (value.size() >= 4 && value.rfind(L".svg") == value.size() - 4) return L"image/svg+xml";
+  return L"application/octet-stream";
+}
+
+void serve_bundle(ICoreWebView2WebResourceRequestedEventArgs* args) {
+  ComPtr<ICoreWebView2WebResourceRequest> request;
+  if (FAILED(args->get_Request(&request))) return;
+  LPWSTR raw_uri = nullptr;
+  request->get_Uri(&raw_uri);
+  const std::wstring path = request_path(raw_uri ? raw_uri : L"");
+  CoTaskMemFree(raw_uri);
+  const auto range = bundle_range(path);
+  const std::wstring headers = L"Content-Type: " + content_type(path) + L"\r\nCache-Control: no-cache";
+  ComPtr<IStream> content;
+  ComPtr<ICoreWebView2WebResourceResponse> response;
+  if (range) content.Attach(SHCreateMemStream(bundle_bytes.data() + range->first, static_cast<UINT>(range->second)));
+  if (FAILED(web_environment->CreateWebResourceResponse(content.Get(), range ? 200 : 404, range ? L"OK" : L"Not Found", headers.c_str(), &response))) return;
+  args->put_Response(response.Get());
+}
+
 void navigate() {
   if (development) {
     webview->Navigate(start_url.c_str());
     if (devtools) webview->OpenDevToolsWindow();
+    return;
+  }
+  if (bundled) {
+    webview->Navigate(L"https://app.local/index.html");
     return;
   }
   if (FAILED(webview.As(&webview3)) || FAILED(webview3->SetVirtualHostNameToFolderMapping(
@@ -339,8 +457,7 @@ void configure_webview() {
         args->get_Uri(&raw_uri);
         const std::wstring uri = raw_uri ? raw_uri : L"";
         CoTaskMemFree(raw_uri);
-        const bool allowed = same_origin(uri, development ? allowed_origin : L"https://app.local");
-        if (!allowed) args->put_Cancel(TRUE);
+        if (!same_origin(uri, development ? allowed_origin : L"https://app.local")) args->put_Cancel(TRUE);
         return S_OK;
       }).Get(), &token);
   webview->add_NewWindowRequested(Callback<ICoreWebView2NewWindowRequestedEventHandler>(
@@ -357,6 +474,14 @@ void configure_webview() {
         }
         return S_OK;
       }).Get(), &token);
+  if (bundled) {
+    webview->AddWebResourceRequestedFilter(L"https://app.local/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+    webview->add_WebResourceRequested(Callback<ICoreWebView2WebResourceRequestedEventHandler>(
+        [](ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+          serve_bundle(args);
+          return S_OK;
+        }).Get(), &token);
+  }
   webview->AddScriptToExecuteOnDocumentCreated(bridge_script,
       Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
           [](HRESULT result, LPCWSTR) -> HRESULT {
@@ -396,6 +521,7 @@ void create_webview() {
               PostQuitMessage(1);
               return result;
             }
+            web_environment = environment;
             return environment->CreateCoreWebView2Controller(window_handle,
                 Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                     [](HRESULT result, ICoreWebView2Controller* value) -> HRESULT {
@@ -417,7 +543,7 @@ void create_webview() {
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   int argument_count = 0;
   LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
   for (int index = 1; index < argument_count; ++index) {
@@ -428,19 +554,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
       allowed_origin = origin_of(start_url);
     } else if (argument == L"--app" && index + 1 < argument_count) {
       app_dir = std::filesystem::absolute(arguments[++index]);
+    } else if (argument == L"--app-name" && index + 1 < argument_count) {
+      app_name = arguments[++index];
+    } else if (argument == L"--storage" && index + 1 < argument_count) {
+      storage_mode = arguments[++index];
+    } else if (argument == L"--data-dir" && index + 1 < argument_count) {
+      data_dir_override = arguments[++index];
     } else if (argument == L"--devtools") {
       devtools = true;
     }
   }
   LocalFree(arguments);
 
-  executable_dir = module_dir();
+  executable_path = module_path();
+  executable_dir = executable_path.parent_path();
+  if (!development) load_bundle();
+  app_name = safe_name(app_name);
+  if (storage_mode != L"portable") storage_mode = L"appData";
   if (app_dir.empty()) app_dir = executable_dir / L"app";
-  if (!development && !std::filesystem::exists(app_dir / L"index.html")) {
+  if (!development && !bundled && !std::filesystem::exists(app_dir / L"index.html")) {
     MessageBoxW(nullptr, L"The application assets are missing.", L"Tiny", MB_ICONERROR);
     return 1;
   }
-  data_dir = roaming_data_dir();
+  data_dir = data_dir_override.empty()
+      ? (storage_mode == L"portable" ? executable_dir / L"data" : roaming_data_dir())
+      : std::filesystem::absolute(data_dir_override);
   if (data_dir.empty()) return 1;
 
   WNDCLASSW window_class{};
@@ -450,10 +588,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   RegisterClassW(&window_class);
 
-  window_handle = CreateWindowW(window_class.lpszClassName, L"Tiny", WS_OVERLAPPEDWINDOW,
+  window_handle = CreateWindowW(window_class.lpszClassName, app_name.c_str(), WS_OVERLAPPEDWINDOW,
       CW_USEDEFAULT, CW_USEDEFAULT, 1200, 800, nullptr, nullptr, instance, nullptr);
   if (!window_handle) return 1;
-  ShowWindow(window_handle, show_command);
+  ShowWindow(window_handle, SW_SHOW);
 
   const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(initialized)) return 1;

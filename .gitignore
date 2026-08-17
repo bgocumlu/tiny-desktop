@@ -1,5 +1,8 @@
 .cache/
+.local-packages/
+.tmp-*/
+.tiny/
 node_modules/
 native/build/
 release/
-
+dist/
