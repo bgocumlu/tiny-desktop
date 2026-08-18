@@ -10,20 +10,23 @@ const projectRoot = resolve(process.cwd());
 const nativeBuild = join(packageRoot, 'native', 'build');
 const release = join(projectRoot, 'release');
 const vite = join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
-const targetId = `${process.platform}-${process.arch}`;
+const targetId = process.env.TINY_TARGET ?? `${process.platform}-${process.arch}`;
+const targetPlatform = targetId.slice(0, targetId.lastIndexOf('-'));
 const targetDefinitions = {
   'win32-x64': {
     runtimeDirectory: 'win32-x64',
     hostName: 'tiny-host.exe',
     artifactExtension: '.exe',
     nativeBuild: 'windows-cmake',
+    nativeOutput: join('Release', 'tiny-host.exe'),
     installer: 'nsis'
   },
   'linux-x64': {
     runtimeDirectory: 'linux-x64',
     hostName: 'tiny-host',
     artifactExtension: '',
-    nativeBuild: null,
+    nativeBuild: 'linux-cmake',
+    nativeOutput: 'tiny-host',
     installer: null
   },
   'darwin-x64': {
@@ -31,6 +34,7 @@ const targetDefinitions = {
     hostName: 'tiny-host',
     artifactExtension: '',
     nativeBuild: null,
+    nativeOutput: null,
     installer: null
   },
   'darwin-arm64': {
@@ -38,6 +42,7 @@ const targetDefinitions = {
     hostName: 'tiny-host',
     artifactExtension: '',
     nativeBuild: null,
+    nativeOutput: null,
     installer: null
   }
 };
@@ -108,10 +113,10 @@ async function loadConfig() {
   const version = normalizeVersion(appConfig.version ?? defaults.app.version);
   const iconValue = appConfig.icon;
   const iconPath = iconValue && typeof iconValue === 'object'
-    ? iconValue[process.platform] ?? iconValue.default
+    ? iconValue[targetPlatform] ?? iconValue.default
     : iconValue;
   const icon = iconPath ? resolve(projectRoot, String(iconPath)) : undefined;
-  if (icon && process.platform === 'win32' && extname(icon).toLowerCase() !== '.ico') {
+  if (icon && targetPlatform === 'win32' && extname(icon).toLowerCase() !== '.ico') {
     throw new Error("tiny.config.js app.icon must point to an .ico file on Windows.");
   }
   for (const [name, value] of Object.entries(config.window?.titleBar ?? {})) {
@@ -167,12 +172,17 @@ async function requireInstaller() {
 
 async function buildNative() {
   const target = getTarget();
-  if (target.nativeBuild !== 'windows-cmake') {
+  if (targetId !== `${process.platform}-${process.arch}`) {
+    throw new Error(`Cannot build ${target.id} natively from ${process.platform}-${process.arch}; stage that runtime from its target OS first.`);
+  }
+  if (!target.nativeBuild) {
     throw new Error(`Native host building for ${target.id} is not implemented yet.`);
   }
-  await run('cmake', ['-S', 'native', '-B', 'native/build', '-A', 'x64'], { cwd: packageRoot });
+  const configureArgs = ['-S', 'native', '-B', 'native/build'];
+  if (target.nativeBuild === 'windows-cmake') configureArgs.push('-A', 'x64');
+  await run('cmake', configureArgs, { cwd: packageRoot });
   await run('cmake', ['--build', 'native/build', '--config', 'Release'], { cwd: packageRoot });
-  return join(nativeBuild, 'Release', target.hostName);
+  return join(nativeBuild, target.nativeOutput);
 }
 
 async function stageRuntime() {
