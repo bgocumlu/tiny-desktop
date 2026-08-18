@@ -24,7 +24,7 @@ function runInstall(target) {
 }
 
 async function copyTemplate(sourceRoot, target, appName) {
-  const binaryExtensions = new Set(['.ico', '.png', '.jpg', '.jpeg', '.gif', '.webp']);
+  const binaryExtensions = new Set(['.ico', '.icns', '.png', '.jpg', '.jpeg', '.gif', '.webp']);
   const entries = await readdir(sourceRoot, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === 'package.json') continue;

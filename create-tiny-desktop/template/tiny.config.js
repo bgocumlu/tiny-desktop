@@ -6,7 +6,6 @@ export default {
     description: '__TINY_APP_NAME__',
     copyright: '',
     website: '',
-    // Replace assets/icon.ico with your own Windows icon.
     icon: './assets/icon.ico'
   },
   package: 'standalone',

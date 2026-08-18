@@ -8,11 +8,49 @@ import * as ResEdit from 'resedit';
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const projectRoot = resolve(process.cwd());
 const nativeBuild = join(packageRoot, 'native', 'build');
-const runtime = join(packageRoot, 'runtime', 'win32-x64', 'tiny-host.exe');
-const nsis = join(packageRoot, 'runtime', 'win32-x64', 'nsis', 'Bin', 'makensis.exe');
-const webviewBootstrapper = join(packageRoot, 'runtime', 'win32-x64', 'installer', 'MicrosoftEdgeWebView2Setup.exe');
 const release = join(projectRoot, 'release');
 const vite = join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
+const targetId = `${process.platform}-${process.arch}`;
+const targetDefinitions = {
+  'win32-x64': {
+    runtimeDirectory: 'win32-x64',
+    hostName: 'tiny-host.exe',
+    artifactExtension: '.exe',
+    nativeBuild: 'windows-cmake',
+    installer: 'nsis'
+  },
+  'linux-x64': {
+    runtimeDirectory: 'linux-x64',
+    hostName: 'tiny-host',
+    artifactExtension: '',
+    nativeBuild: null,
+    installer: null
+  },
+  'darwin-x64': {
+    runtimeDirectory: 'darwin-x64',
+    hostName: 'tiny-host',
+    artifactExtension: '',
+    nativeBuild: null,
+    installer: null
+  },
+  'darwin-arm64': {
+    runtimeDirectory: 'darwin-arm64',
+    hostName: 'tiny-host',
+    artifactExtension: '',
+    nativeBuild: null,
+    installer: null
+  }
+};
+
+function getTarget() {
+  const definition = targetDefinitions[targetId];
+  if (!definition) throw new Error(`Tiny does not support ${targetId} yet.`);
+  return {
+    id: targetId,
+    ...definition,
+    runtime: join(packageRoot, 'runtime', definition.runtimeDirectory, definition.hostName)
+  };
+}
 
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -42,7 +80,6 @@ async function loadConfig() {
     app: {
       name: basename(projectRoot),
       version: '0.1.0',
-      version4: '0.1.0.0',
       publisher: '',
       description: '',
       copyright: '',
@@ -69,8 +106,14 @@ async function loadConfig() {
   const appConfig = config.app ?? {};
   const name = String(appConfig.name ?? defaults.app.name);
   const version = normalizeVersion(appConfig.version ?? defaults.app.version);
-  const icon = appConfig.icon ? resolve(projectRoot, String(appConfig.icon)) : undefined;
-  if (icon && extname(icon).toLowerCase() !== '.ico') throw new Error("tiny.config.js app.icon must point to an .ico file.");
+  const iconValue = appConfig.icon;
+  const iconPath = iconValue && typeof iconValue === 'object'
+    ? iconValue[process.platform] ?? iconValue.default
+    : iconValue;
+  const icon = iconPath ? resolve(projectRoot, String(iconPath)) : undefined;
+  if (icon && process.platform === 'win32' && extname(icon).toLowerCase() !== '.ico') {
+    throw new Error("tiny.config.js app.icon must point to an .ico file on Windows.");
+  }
   for (const [name, value] of Object.entries(config.window?.titleBar ?? {})) {
     if (['color', 'textColor'].includes(name) && value !== undefined && !/^#[0-9a-f]{6}$/i.test(String(value))) {
       throw new Error(`tiny.config.js window.titleBar.${name} must be a #RRGGBB color.`);
@@ -85,7 +128,6 @@ async function loadConfig() {
       ...appConfig,
       name,
       version: version.text,
-      version4: version.windows,
       publisher: String(appConfig.publisher ?? defaults.app.publisher),
       description: String(appConfig.description ?? name),
       copyright: String(appConfig.copyright ?? defaults.app.copyright),
@@ -104,18 +146,17 @@ async function requireVite() {
 }
 
 async function requireRuntime() {
-  if (process.platform !== 'win32' || process.arch !== 'x64') {
-    throw new Error('Tiny V1 currently supports Windows x64 only.');
-  }
-  await stat(runtime).catch(() => {
-    throw new Error('The Windows runtime is missing. Run npm run stage-runtime in the Tiny repository.');
+  const target = getTarget();
+  await stat(target.runtime).catch(() => {
+    throw new Error(`The ${target.id} runtime is missing. Build or stage ${relative(packageRoot, target.runtime)} first.`);
   });
 }
 
 async function requireInstaller() {
-  if (process.platform !== 'win32' || process.arch !== 'x64') {
-    throw new Error('Tiny V1 installer currently supports Windows x64 only.');
-  }
+  const target = getTarget();
+  if (target.installer !== 'nsis') throw new Error(`Installer packaging for ${target.id} is not implemented yet.`);
+  const nsis = join(packageRoot, 'runtime', target.runtimeDirectory, 'nsis', 'Bin', 'makensis.exe');
+  const webviewBootstrapper = join(packageRoot, 'runtime', target.runtimeDirectory, 'installer', 'MicrosoftEdgeWebView2Setup.exe');
   await stat(nsis).catch(() => {
     throw new Error('The Tiny NSIS toolchain is missing from the runtime package.');
   });
@@ -125,17 +166,22 @@ async function requireInstaller() {
 }
 
 async function buildNative() {
+  const target = getTarget();
+  if (target.nativeBuild !== 'windows-cmake') {
+    throw new Error(`Native host building for ${target.id} is not implemented yet.`);
+  }
   await run('cmake', ['-S', 'native', '-B', 'native/build', '-A', 'x64'], { cwd: packageRoot });
   await run('cmake', ['--build', 'native/build', '--config', 'Release'], { cwd: packageRoot });
-  return join(nativeBuild, 'Release', 'tiny-host.exe');
+  return join(nativeBuild, 'Release', target.hostName);
 }
 
 async function stageRuntime() {
+  const target = getTarget();
   const host = await buildNative();
-  await mkdir(dirname(runtime), { recursive: true });
+  await mkdir(dirname(target.runtime), { recursive: true });
   await mkdir(join(packageRoot, '.local-packages'), { recursive: true });
-  await cp(host, runtime);
-  console.log(`Staged ${relative(packageRoot, runtime)}.`);
+  await cp(host, target.runtime);
+  console.log(`Staged ${relative(packageRoot, target.runtime)}.`);
 }
 
 async function waitForVite(url, timeout = 30000) {
@@ -161,6 +207,7 @@ function runtimeArgs(config) {
 }
 
 async function startDev() {
+  const target = getTarget();
   await requireVite();
   await requireRuntime();
   const config = await loadConfig();
@@ -180,7 +227,7 @@ async function startDev() {
 
   try {
     await waitForVite(url);
-    hostProcess = spawn(runtime, ['--dev', url, '--devtools', ...runtimeArgs(config)], {
+    hostProcess = spawn(target.runtime, ['--dev', url, '--devtools', ...runtimeArgs(config)], {
       cwd: projectRoot,
       stdio: 'ignore'
     });
@@ -227,17 +274,18 @@ async function setExecutableMetadata(executable, app, executableName) {
     },
     [{ lang: 1033, codepage: 1200, values: {} }]
   );
-  versionInfo.setFileVersion(app.version4, 1033);
-  versionInfo.setProductVersion(app.version4, 1033);
+  const version4 = normalizeVersion(app.version).windows;
+  versionInfo.setFileVersion(version4, 1033);
+  versionInfo.setProductVersion(version4, 1033);
   versionInfo.setStringValues({ lang: 1033, codepage: 1200 }, {
     CompanyName: app.publisher,
     FileDescription: app.description,
-    FileVersion: app.version4,
+    FileVersion: version4,
     InternalName: executableName,
     LegalCopyright: app.copyright,
     OriginalFilename: executableName,
     ProductName: app.name,
-    ProductVersion: app.version4
+    ProductVersion: version4
   });
   versionInfo.outputToResourceEntries(resources.entries);
   resources.outputResource(binary);
@@ -271,9 +319,9 @@ function nsisString(value) {
     .replace(/[\r\n]/g, ' ');
 }
 
-function installerScript(config, executable, output, icon) {
+function installerScript(config, executable, output, icon, webviewBootstrapper) {
   const appName = nsisString(config.app.name);
-  const appVersion = nsisString(config.app.version4);
+  const appVersion = nsisString(normalizeVersion(config.app.version).windows);
   const appPublisher = nsisString(config.app.publisher);
   const appDescription = nsisString(config.app.description);
   const appCopyright = nsisString(config.app.copyright);
@@ -449,18 +497,19 @@ SectionEnd
 }
 
 async function buildStandalone(config) {
+  const target = getTarget();
   await requireVite();
   await requireRuntime();
   await run(process.execPath, [vite, 'build']);
   await mkdir(release, { recursive: true });
-  const filename = (config.app.name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Tiny') + '.exe';
+  const filename = (config.app.name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Tiny') + target.artifactExtension;
   const output = join(release, filename);
-  const hostCopy = join(release, '.tiny-host.exe');
+  const hostCopy = join(release, `.${target.hostName}`);
   await rm(join(release, 'app'), { recursive: true, force: true });
   await rm(output, { force: true });
-  await cp(runtime, hostCopy);
+  await cp(target.runtime, hostCopy);
   try {
-    await setExecutableMetadata(hostCopy, config.app, filename);
+    if (target.id === 'win32-x64') await setExecutableMetadata(hostCopy, config.app, filename);
     await bundleRuntime(hostCopy, join(projectRoot, 'dist'), output, config);
   } finally {
     await rm(hostCopy, { force: true });
@@ -470,13 +519,16 @@ async function buildStandalone(config) {
 }
 
 async function buildInstaller(executable, config) {
+  const target = getTarget();
   await requireInstaller();
-  const output = join(release, `${basename(executable, '.exe')}-setup.exe`);
+  const output = join(release, `${basename(executable, target.artifactExtension)}-setup.exe`);
   const script = join(release, '.tiny-installer.nsi');
   const icon = config.app.icon ? join(release, '.tiny-installer.ico') : undefined;
   if (icon) await cp(config.app.icon, icon);
   await rm(output, { force: true });
-  await writeFile(script, installerScript(config, executable, output, icon));
+  const nsis = join(packageRoot, 'runtime', target.runtimeDirectory, 'nsis', 'Bin', 'makensis.exe');
+  const webviewBootstrapper = join(packageRoot, 'runtime', target.runtimeDirectory, 'installer', 'MicrosoftEdgeWebView2Setup.exe');
+  await writeFile(script, installerScript(config, executable, output, icon, webviewBootstrapper));
   try {
     await run(nsis, [script], { cwd: release, windowsHide: true });
   } finally {
@@ -496,7 +548,9 @@ async function buildApp() {
 async function check() {
   await run(process.execPath, ['--check', 'cli/tiny.mjs'], { cwd: packageRoot });
   await run(process.execPath, ['--check', 'create-tiny-desktop/cli/create.mjs'], { cwd: packageRoot });
-  await stageRuntime();
+  const target = getTarget();
+  if (target.nativeBuild) await stageRuntime();
+  else console.log(`Skipped native runtime check for ${target.id}; host implementation is not available yet.`);
   console.log('Checks passed.');
 }
 
