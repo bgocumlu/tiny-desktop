@@ -50,16 +50,16 @@ const targetDefinitions = {
     runtimeDirectory: 'darwin-x64',
     hostName: 'tiny-host',
     artifactExtension: '.app',
-    nativeBuild: null,
-    nativeOutput: null,
+    nativeBuild: 'macos-cmake',
+    nativeOutput: 'tiny-host',
     installer: 'dmg'
   },
   'darwin-arm64': {
     runtimeDirectory: 'darwin-arm64',
     hostName: 'tiny-host',
     artifactExtension: '.app',
-    nativeBuild: null,
-    nativeOutput: null,
+    nativeBuild: 'macos-cmake',
+    nativeOutput: 'tiny-host',
     installer: 'dmg'
   }
 };
@@ -191,17 +191,24 @@ async function requireInstaller() {
 
 async function buildNative() {
   const target = getTarget();
-  if (targetId !== `${process.platform}-${process.arch}`) {
+  const hostTarget = `${process.platform}-${process.arch}`;
+  const macCrossBuild = process.platform === 'darwin' && targetPlatform === 'darwin';
+  if (targetId !== hostTarget && !macCrossBuild) {
     throw new Error(`Cannot build ${target.id} natively from ${process.platform}-${process.arch}; stage that runtime from its target OS first.`);
   }
   if (!target.nativeBuild) {
     throw new Error(`Native host building for ${target.id} is not implemented yet.`);
   }
-  const configureArgs = ['-S', 'native', '-B', 'native/build'];
+  const buildDirectory = join(nativeBuild, target.id);
+  const configureArgs = ['-S', 'native', '-B', buildDirectory];
   if (target.nativeBuild === 'windows-cmake') configureArgs.push('-A', 'x64');
+  if (target.nativeBuild === 'macos-cmake') configureArgs.push(
+    '-DCMAKE_OSX_DEPLOYMENT_TARGET=12.0',
+    `-DCMAKE_OSX_ARCHITECTURES=${target.id === 'darwin-x64' ? 'x86_64' : 'arm64'}`
+  );
   await run('cmake', configureArgs, { cwd: packageRoot });
-  await run('cmake', ['--build', 'native/build', '--config', 'Release'], { cwd: packageRoot });
-  return join(nativeBuild, target.nativeOutput);
+  await run('cmake', ['--build', buildDirectory, '--config', 'Release'], { cwd: packageRoot });
+  return join(buildDirectory, target.nativeOutput);
 }
 
 async function stageRuntime() {
@@ -525,13 +532,17 @@ SectionEnd
 `;
 }
 
+function artifactName(value) {
+  return String(value).replace(/[<>:"/\\|?*]/g, '-').trim().replace(/^\.+/, '') || 'Tiny';
+}
+
 async function buildStandalone(config) {
   const target = getTarget();
   await requireVite();
   await requireRuntime();
   await run(process.execPath, [vite, 'build']);
   await mkdir(release, { recursive: true });
-  const filename = (config.app.name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Tiny') + target.artifactExtension;
+  const filename = artifactName(config.app.name) + target.artifactExtension;
   const output = join(release, filename);
   const hostCopy = join(release, `.${target.hostName}`);
   await rm(join(release, 'app'), { recursive: true, force: true });

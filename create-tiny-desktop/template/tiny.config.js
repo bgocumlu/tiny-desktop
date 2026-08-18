@@ -10,6 +10,7 @@ export default {
     icon: {
       win32: './assets/icon.ico',
       linux: './assets/icon.svg',
+      darwin: './assets/icon.icns',
       default: './assets/icon.ico'
     }
   },

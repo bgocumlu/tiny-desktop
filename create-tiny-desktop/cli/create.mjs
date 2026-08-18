@@ -57,7 +57,7 @@ async function create() {
   const noInstall = args.includes('--no-install');
   const targetArg = directories[0];
   const target = resolve(process.cwd(), targetArg);
-  const appName = basename(target);
+  const appName = basename(target).replace(/^\.+/, '') || 'tiny-app';
   const packageName = slug(appName);
   const runtimePackage = process.env.TINY_RUNTIME_PACKAGE ?? '^0.1.0';
 
