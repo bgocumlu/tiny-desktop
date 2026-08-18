@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { chmod, cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, basename, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,7 +10,22 @@ const projectRoot = resolve(process.cwd());
 const nativeBuild = join(packageRoot, 'native', 'build');
 const release = join(projectRoot, 'release');
 const vite = join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
-const targetId = process.env.TINY_TARGET ?? `${process.platform}-${process.arch}`;
+function requestedTarget(args) {
+  const index = args.findIndex(arg => arg === '--target' || arg.startsWith('--target='));
+  if (index < 0) return undefined;
+  if (args[index] === '--target') {
+    const value = args[index + 1];
+    if (!value || value.startsWith('-')) throw new Error('The --target option requires a target like linux-x64.');
+    return value;
+  }
+  const value = args[index].slice('--target='.length);
+  if (!value) throw new Error('The --target option requires a target like linux-x64.');
+  return value;
+}
+
+const targetId = requestedTarget(process.argv.slice(3))
+  ?? process.env.TINY_TARGET
+  ?? `${process.platform}-${process.arch}`;
 const targetPlatform = targetId.slice(0, targetId.lastIndexOf('-'));
 const targetDefinitions = {
   'win32-x64': {
@@ -29,23 +44,23 @@ const targetDefinitions = {
     nativeOutput: 'tiny-host',
     debArchitecture: 'amd64',
     debDepends: 'libgtk-3-0, libwebkit2gtk-4.1-0',
-    installer: null
+    installer: 'deb'
   },
   'darwin-x64': {
     runtimeDirectory: 'darwin-x64',
     hostName: 'tiny-host',
-    artifactExtension: '',
+    artifactExtension: '.app',
     nativeBuild: null,
     nativeOutput: null,
-    installer: null
+    installer: 'dmg'
   },
   'darwin-arm64': {
     runtimeDirectory: 'darwin-arm64',
     hostName: 'tiny-host',
-    artifactExtension: '',
+    artifactExtension: '.app',
     nativeBuild: null,
     nativeOutput: null,
-    installer: null
+    installer: 'dmg'
   }
 };
 
@@ -106,11 +121,9 @@ async function loadConfig() {
   const loaded = await import(`${pathToFileURL(configPath).href}?v=${Date.now()}`);
   config = loaded.default ?? loaded;
   const packageMode = config.package ?? defaults.package;
-  if (!['standalone', 'installer', 'deb'].includes(packageMode)) {
-    throw new Error("tiny.config.js package must be 'standalone', 'installer', or 'deb'.");
+  if (!['standalone', 'installer'].includes(packageMode)) {
+    throw new Error("tiny.config.js package must be 'standalone' or 'installer'.");
   }
-  if (packageMode === 'installer' && targetId !== 'win32-x64') throw new Error("tiny.config.js package 'installer' is only supported for win32-x64.");
-  if (packageMode === 'deb' && targetId !== 'linux-x64') throw new Error("tiny.config.js package 'deb' is only supported for linux-x64.");
   const mode = config.storage?.mode ?? defaults.storage.mode;
   if (mode !== 'appData' && mode !== 'portable') throw new Error("tiny.config.js storage.mode must be 'appData' or 'portable'.");
   const appConfig = config.app ?? {};
@@ -165,7 +178,7 @@ async function requireRuntime() {
 
 async function requireInstaller() {
   const target = getTarget();
-  if (target.installer !== 'nsis') throw new Error(`Installer packaging for ${target.id} is not implemented yet.`);
+  if (target.installer !== 'nsis') return;
   const nsis = join(packageRoot, 'runtime', target.runtimeDirectory, 'nsis', 'Bin', 'makensis.exe');
   const webviewBootstrapper = join(packageRoot, 'runtime', target.runtimeDirectory, 'installer', 'MicrosoftEdgeWebView2Setup.exe');
   await stat(nsis).catch(() => {
@@ -522,11 +535,23 @@ async function buildStandalone(config) {
   const output = join(release, filename);
   const hostCopy = join(release, `.${target.hostName}`);
   await rm(join(release, 'app'), { recursive: true, force: true });
-  await rm(output, { force: true });
+  await rm(output, { recursive: true, force: true });
+  const macBundle = target.artifactExtension === '.app';
+  const executableName = macBundle ? basename(output, '.app') : filename;
+  const bundledExecutable = macBundle ? join(output, 'Contents', 'MacOS', executableName) : output;
+  if (macBundle) await mkdir(dirname(bundledExecutable), { recursive: true });
   await cp(target.runtime, hostCopy);
   try {
     if (target.id === 'win32-x64') await setExecutableMetadata(hostCopy, config.app, filename);
-    await bundleRuntime(hostCopy, join(projectRoot, 'dist'), output, config);
+    await bundleRuntime(hostCopy, join(projectRoot, 'dist'), bundledExecutable, config);
+    if (macBundle) {
+      await chmod(bundledExecutable, 0o755);
+      await writeFile(join(output, 'Contents', 'Info.plist'), macBundlePlist(config, executableName));
+      if (config.app.icon && extname(config.app.icon).toLowerCase() === '.icns') {
+        await mkdir(join(output, 'Contents', 'Resources'), { recursive: true });
+        await cp(config.app.icon, join(output, 'Contents', 'Resources', 'app.icns'));
+      }
+    }
   } finally {
     await rm(hostCopy, { force: true });
   }
@@ -534,7 +559,42 @@ async function buildStandalone(config) {
   return output;
 }
 
-async function buildInstaller(executable, config) {
+function plistText(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+}
+
+function macBundlePlist(config, executableName) {
+  const icon = config.app.icon && extname(config.app.icon).toLowerCase() === '.icns';
+  const iconEntry = icon ? '  <key>CFBundleIconFile</key>\n  <string>app.icns</string>\n' : '';
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>${plistText(config.app.name)}</string>
+  <key>CFBundleExecutable</key>
+  <string>${plistText(executableName)}</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.tiny.${debianPackageName(config.app.name).replaceAll('-', '.')}</string>
+  <key>CFBundleName</key>
+  <string>${plistText(config.app.name)}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${plistText(config.app.version)}</string>
+  <key>CFBundleVersion</key>
+  <string>${plistText(config.app.version)}</string>
+${iconEntry}</dict>
+</plist>
+`;
+}
+
+async function buildWindowsInstaller(executable, config) {
   const target = getTarget();
   await requireInstaller();
   const output = join(release, `${basename(executable, target.artifactExtension)}-setup.exe`);
@@ -658,11 +718,38 @@ async function buildDeb(executable, config) {
   return output;
 }
 
+async function buildDmg(executable, config) {
+  const outputName = basename(executable, '.app');
+  const output = join(release, `${outputName}.dmg`);
+  const staging = join(release, `.${outputName}-dmg`);
+  await rm(staging, { recursive: true, force: true });
+  await rm(output, { force: true });
+  await mkdir(staging, { recursive: true });
+  await cp(executable, join(staging, basename(executable)), { recursive: true });
+  await symlink('/Applications', join(staging, 'Applications'));
+  try {
+    await run('hdiutil', ['create', '-volname', config.app.name, '-srcfolder', staging, '-ov', '-format', 'UDZO', output], { cwd: release });
+  } catch {
+    throw new Error('macOS .dmg packaging requires hdiutil; run this build on macOS.');
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
+  console.log(`Built release/${basename(output)} with hdiutil.`);
+  return output;
+}
+
+async function buildInstaller(executable, config) {
+  const target = getTarget();
+  if (target.installer === 'nsis') return buildWindowsInstaller(executable, config);
+  if (target.installer === 'deb') return buildDeb(executable, config);
+  if (target.installer === 'dmg') return buildDmg(executable, config);
+  throw new Error(`Installer packaging for ${target.id} is not implemented yet.`);
+}
+
 async function buildApp() {
   const config = await loadConfig();
   const executable = await buildStandalone(config);
   if (config.package === 'installer') await buildInstaller(executable, config);
-  else if (config.package === 'deb') await buildDeb(executable, config);
 }
 
 async function check() {
@@ -680,7 +767,7 @@ try {
   else if (command === 'build') await buildApp();
   else if (command === 'check') await check();
   else if (command === 'stage-runtime') await stageRuntime();
-  else console.log('Usage: tiny dev | tiny build');
+  else console.log('Usage: tiny dev | tiny build [--target <target>]');
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

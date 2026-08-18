@@ -7,7 +7,11 @@ export default {
     description: '__TINY_APP_NAME__',
     copyright: '',
     website: '',
-    icon: './assets/icon.ico'
+    icon: {
+      win32: './assets/icon.ico',
+      linux: './assets/icon.svg',
+      default: './assets/icon.ico'
+    }
   },
   package: 'standalone',
   storage: {

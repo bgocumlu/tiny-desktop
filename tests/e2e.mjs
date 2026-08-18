@@ -78,7 +78,7 @@ try {
   assert.match(`${invalidCreate.stdout}\n${invalidCreate.stderr}`, /Usage: npx create-tiny-desktop <directory>/);
   run(['exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-desktop', projectRoot], repoRoot, env);
 
-  for (const path of ['package.json', '.gitignore', 'index.html', 'src/main.js', 'src/style.css', 'tiny.config.js', 'assets/icon.ico']) {
+  for (const path of ['package.json', '.gitignore', 'index.html', 'src/main.js', 'src/style.css', 'tiny.config.js', 'assets/icon.ico', 'assets/icon.svg']) {
     assert.equal(await exists(join(projectRoot, path)), true, `Missing generated file: ${path}`);
   }
 
