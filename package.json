@@ -1,7 +1,23 @@
 {
   "name": "tiny-desktop",
   "version": "0.1.2",
+  "description": "Build lightweight cross-platform desktop apps with HTML, CSS, and JavaScript.",
   "type": "module",
+  "keywords": [
+    "desktop app",
+    "cross-platform",
+    "windows",
+    "linux",
+    "macos",
+    "webview",
+    "vite",
+    "standalone",
+    "installer"
+  ],
+  "license": "MIT",
+  "repository": "github:bgocumlu/tiny-desktop",
+  "bugs": "https://github.com/bgocumlu/tiny-desktop/issues",
+  "homepage": "https://github.com/bgocumlu/tiny-desktop#readme",
   "bin": {
     "tiny": "cli/tiny.mjs"
   },

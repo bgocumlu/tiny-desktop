@@ -1,8 +1,22 @@
 {
   "name": "create-tiny-desktop",
   "version": "0.1.2",
-  "description": "Create an opinionated Tiny desktop app",
+  "description": "Scaffold Tiny Desktop apps for Windows, Linux, and macOS with Node.js and npm.",
   "type": "module",
+  "keywords": [
+    "create",
+    "scaffold",
+    "desktop app",
+    "windows",
+    "linux",
+    "macos",
+    "vite",
+    "webview"
+  ],
+  "license": "MIT",
+  "repository": "github:bgocumlu/tiny-desktop",
+  "bugs": "https://github.com/bgocumlu/tiny-desktop/issues",
+  "homepage": "https://github.com/bgocumlu/tiny-desktop#readme",
   "bin": {
     "create-tiny-desktop": "cli/create.mjs"
   },
