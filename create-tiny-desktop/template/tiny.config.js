@@ -3,6 +3,7 @@ export default {
     name: '__TINY_APP_NAME__',
     version: '0.1.0',
     publisher: '',
+    maintainer: '',
     description: '__TINY_APP_NAME__',
     copyright: '',
     website: '',

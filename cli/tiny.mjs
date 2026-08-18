@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, basename, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -27,6 +27,8 @@ const targetDefinitions = {
     artifactExtension: '',
     nativeBuild: 'linux-cmake',
     nativeOutput: 'tiny-host',
+    debArchitecture: 'amd64',
+    debDepends: 'libgtk-3-0, libwebkit2gtk-4.1-0',
     installer: null
   },
   'darwin-x64': {
@@ -86,6 +88,7 @@ async function loadConfig() {
       name: basename(projectRoot),
       version: '0.1.0',
       publisher: '',
+      maintainer: '',
       description: '',
       copyright: '',
       website: ''
@@ -103,9 +106,11 @@ async function loadConfig() {
   const loaded = await import(`${pathToFileURL(configPath).href}?v=${Date.now()}`);
   config = loaded.default ?? loaded;
   const packageMode = config.package ?? defaults.package;
-  if (packageMode !== 'standalone' && packageMode !== 'installer') {
-    throw new Error("tiny.config.js package must be 'standalone' or 'installer'.");
+  if (!['standalone', 'installer', 'deb'].includes(packageMode)) {
+    throw new Error("tiny.config.js package must be 'standalone', 'installer', or 'deb'.");
   }
+  if (packageMode === 'installer' && targetId !== 'win32-x64') throw new Error("tiny.config.js package 'installer' is only supported for win32-x64.");
+  if (packageMode === 'deb' && targetId !== 'linux-x64') throw new Error("tiny.config.js package 'deb' is only supported for linux-x64.");
   const mode = config.storage?.mode ?? defaults.storage.mode;
   if (mode !== 'appData' && mode !== 'portable') throw new Error("tiny.config.js storage.mode must be 'appData' or 'portable'.");
   const appConfig = config.app ?? {};
@@ -134,6 +139,7 @@ async function loadConfig() {
       name,
       version: version.text,
       publisher: String(appConfig.publisher ?? defaults.app.publisher),
+      maintainer: String(appConfig.maintainer ?? defaults.app.maintainer),
       description: String(appConfig.description ?? name),
       copyright: String(appConfig.copyright ?? defaults.app.copyright),
       website: String(appConfig.website ?? defaults.app.website),
@@ -549,10 +555,114 @@ async function buildInstaller(executable, config) {
   return output;
 }
 
+function debianPackageName(value) {
+  let name = String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9+.-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  name = name.replace(/^[^a-z0-9]+/, '');
+  if (!name) name = 'tiny-app';
+  return name;
+}
+
+function controlText(value) {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+}
+
+function desktopText(value) {
+  return controlText(value)
+    .replaceAll('\\', '\\\\')
+    .replaceAll(';', '\\;');
+}
+
+function debMaintainer(config) {
+  const value = controlText(config.app.maintainer);
+  if (value) {
+    if (!/^.+ <[^<>@\s]+@[^<>@\s]+>$/.test(value)) {
+      throw new Error("tiny.config.js app.maintainer must look like 'Name <email@example.com>'.");
+    }
+    return value;
+  }
+  return `${controlText(config.app.publisher) || controlText(config.app.name)} <noreply@example.invalid>`;
+}
+
+async function buildDeb(executable, config) {
+  const target = getTarget();
+  try {
+    await run('dpkg-deb', ['--version'], { cwd: release, stdio: 'ignore' });
+  } catch {
+    throw new Error('Linux .deb packaging requires dpkg-deb; run this build on Linux or in a Debian/Ubuntu container.');
+  }
+  const packageName = debianPackageName(config.app.name);
+  const packageRoot = join(release, `.${packageName}-deb`);
+  const output = join(release, `${packageName}_${config.app.version}_${target.debArchitecture}.deb`);
+  const packageExecutable = join(packageRoot, 'usr', 'bin', packageName);
+  const desktopDirectory = join(packageRoot, 'usr', 'share', 'applications');
+  const iconExtension = config.app.icon ? extname(config.app.icon).toLowerCase() : '';
+  const iconSupported = ['.ico', '.png', '.svg'].includes(iconExtension);
+  await rm(packageRoot, { recursive: true, force: true });
+  await rm(output, { force: true });
+  await mkdir(dirname(packageExecutable), { recursive: true });
+  await mkdir(join(packageRoot, 'DEBIAN'), { recursive: true });
+  await mkdir(desktopDirectory, { recursive: true });
+  await cp(executable, packageExecutable);
+  await chmod(packageExecutable, 0o755);
+
+  let iconLine = '';
+  if (iconSupported) {
+    const iconDirectory = iconExtension === '.svg'
+      ? join(packageRoot, 'usr', 'share', 'icons', 'hicolor', 'scalable', 'apps')
+      : join(packageRoot, 'usr', 'share', 'icons', 'hicolor', '256x256', 'apps');
+    await mkdir(iconDirectory, { recursive: true });
+    const iconOutput = join(iconDirectory, `${packageName}${iconExtension}`);
+    await cp(config.app.icon, iconOutput);
+    await chmod(iconOutput, 0o644);
+    iconLine = iconExtension === '.ico'
+      ? `Icon=/usr/share/icons/hicolor/256x256/apps/${packageName}.ico\n`
+      : `Icon=${packageName}\n`;
+  } else if (config.app.icon) {
+    console.warn(`Skipping Linux icon ${config.app.icon}; use a .ico, .png, or .svg icon for .deb packaging.`);
+  }
+
+  const description = controlText(config.app.description) || config.app.name;
+  const control = [
+    `Package: ${packageName}`,
+    `Version: ${config.app.version}`,
+    'Section: utils',
+    'Priority: optional',
+    `Architecture: ${target.debArchitecture}`,
+    `Maintainer: ${debMaintainer(config)}`,
+    `Depends: ${target.debDepends}`,
+    `Description: ${description}`,
+    config.app.website ? `Homepage: ${controlText(config.app.website)}` : ''
+  ].filter(Boolean).join('\n') + '\n';
+  const desktop = [
+    '[Desktop Entry]',
+    'Type=Application',
+    `Name=${desktopText(config.app.name)}`,
+    `Comment=${desktopText(config.app.description || config.app.name)}`,
+    `Exec=/usr/bin/${packageName}`,
+    iconLine.trimEnd(),
+    'Terminal=false',
+    'Categories=Utility;',
+    'StartupNotify=true'
+  ].filter(Boolean).join('\n') + '\n';
+  await writeFile(join(packageRoot, 'DEBIAN', 'control'), control);
+  await writeFile(join(desktopDirectory, `${packageName}.desktop`), desktop);
+  try {
+    await run('dpkg-deb', ['--build', '--root-owner-group', packageRoot, output], { cwd: release });
+  } finally {
+    await rm(packageRoot, { recursive: true, force: true });
+  }
+  console.log(`Built release/${basename(output)} with dpkg-deb.`);
+  return output;
+}
+
 async function buildApp() {
   const config = await loadConfig();
   const executable = await buildStandalone(config);
   if (config.package === 'installer') await buildInstaller(executable, config);
+  else if (config.package === 'deb') await buildDeb(executable, config);
 }
 
 async function check() {
