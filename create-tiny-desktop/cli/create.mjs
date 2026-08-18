@@ -73,6 +73,7 @@ async function create() {
     private: true,
     type: 'module',
     scripts: { dev: 'tiny dev', build: 'tiny build' },
+    engines: { node: '^20.19.0 || >=22.12.0' },
     devDependencies: { 'tiny-desktop': runtimePackage, vite: '^8.2.1' }
   }, null, 2) + '\n');
 

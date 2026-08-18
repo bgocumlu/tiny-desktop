@@ -5,6 +5,7 @@
   "bin": {
     "tiny": "cli/tiny.mjs"
   },
+  "types": "types/index.d.ts",
   "files": [
     "cli",
     "runtime",
@@ -21,6 +22,6 @@
     "pack:create-local": "npm pack ./create-tiny-desktop --pack-destination .local-packages"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   }
 }
