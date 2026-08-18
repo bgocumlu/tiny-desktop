@@ -1,6 +1,6 @@
 {
   "name": "tiny-desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Build lightweight cross-platform desktop apps with HTML, CSS, and JavaScript.",
   "type": "module",
   "keywords": [

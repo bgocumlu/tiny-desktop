@@ -670,6 +670,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       ? (storage_mode == L"portable" ? executable_dir / L"data" : roaming_data_dir())
       : std::filesystem::absolute(data_dir_override);
   if (data_dir.empty()) return 1;
+  std::error_code error;
+  std::filesystem::create_directories(data_dir, error);
+  if (error) {
+    MessageBoxW(nullptr, L"Could not create the application data directory.", L"Tiny", MB_ICONERROR);
+    return 1;
+  }
 
   WNDCLASSW window_class{};
   window_class.hInstance = instance;
