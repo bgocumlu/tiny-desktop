@@ -174,6 +174,7 @@ async function requireRuntime() {
   await stat(target.runtime).catch(() => {
     throw new Error(`The ${target.id} runtime is missing. Build or stage ${relative(packageRoot, target.runtime)} first.`);
   });
+  if (process.platform !== 'win32') await chmod(target.runtime, 0o755);
 }
 
 async function requireInstaller() {
@@ -217,6 +218,7 @@ async function stageRuntime() {
   await mkdir(dirname(target.runtime), { recursive: true });
   await mkdir(join(packageRoot, '.local-packages'), { recursive: true });
   await cp(host, target.runtime);
+  if (process.platform !== 'win32') await chmod(target.runtime, 0o755);
   console.log(`Staged ${relative(packageRoot, target.runtime)}.`);
 }
 
@@ -555,6 +557,7 @@ async function buildStandalone(config) {
   try {
     if (target.id === 'win32-x64') await setExecutableMetadata(hostCopy, config.app, filename);
     await bundleRuntime(hostCopy, join(projectRoot, 'dist'), bundledExecutable, config);
+    if (target.artifactExtension === '') await chmod(output, 0o755);
     if (macBundle) {
       await chmod(bundledExecutable, 0o755);
       await writeFile(join(output, 'Contents', 'Info.plist'), macBundlePlist(config, executableName));
