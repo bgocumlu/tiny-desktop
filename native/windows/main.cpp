@@ -416,6 +416,8 @@ bool load_bundle() {
   bundled = true;
   if (const auto value = json_string(bundle_manifest, L"appName")) app_name = *value;
   if (const auto value = json_string(bundle_manifest, L"storage")) storage_mode = *value;
+  if (const auto value = json_string(bundle_manifest, L"titlebarColor")) titlebar_color = color_from_hex(*value);
+  if (const auto value = json_string(bundle_manifest, L"titlebarTextColor")) titlebar_text_color = color_from_hex(*value);
   return true;
 }
 

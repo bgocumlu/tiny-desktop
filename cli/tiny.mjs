@@ -339,7 +339,13 @@ async function bundleRuntime(host, dist, output, config) {
     offset += bytes.length;
     return entry;
   });
-  const manifest = Buffer.from(JSON.stringify({ appName: config.app.name, storage: config.storage.mode, files: entries }));
+  const manifest = Buffer.from(JSON.stringify({
+    appName: config.app.name,
+    storage: config.storage.mode,
+    titlebarColor: config.window.titleBar.color,
+    titlebarTextColor: config.window.titleBar.textColor,
+    files: entries
+  }));
   const header = Buffer.alloc(16);
   header.write('TINYBND1', 0, 'ascii');
   header.writeBigUInt64LE(BigInt(manifest.length), 8);

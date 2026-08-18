@@ -117,6 +117,10 @@ bool load_bundle() {
   NSString* storage = manifest[@"storage"];
   if ([name isKindOfClass:[NSString class]]) app_name = [name UTF8String];
   if ([storage isKindOfClass:[NSString class]]) storage_mode = [storage UTF8String];
+  NSString* titlebar = manifest[@"titlebarColor"];
+  NSString* titlebar_text = manifest[@"titlebarTextColor"];
+  if ([titlebar isKindOfClass:[NSString class]]) titlebar_color = [titlebar UTF8String];
+  if ([titlebar_text isKindOfClass:[NSString class]]) titlebar_text_color = [titlebar_text UTF8String];
   const auto data_start = manifest_start + static_cast<std::size_t>(manifest_size);
   for (NSDictionary* entry in manifest[@"files"]) {
     NSString* path = entry[@"path"];
@@ -367,7 +371,7 @@ NSColor* color_from_hex(const std::string& value) {
   NSColor* text = color_from_hex(titlebar_text_color);
   if (text) {
     const auto luminance = text.redComponent * 0.299 + text.greenComponent * 0.587 + text.blueComponent * 0.114;
-    window_handle.appearance = [NSAppearance appearanceNamed:luminance < 0.5 ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    window_handle.appearance = [NSAppearance appearanceNamed:luminance < 0.5 ? NSAppearanceNameAqua : NSAppearanceNameDarkAqua];
   }
   [window_handle makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
