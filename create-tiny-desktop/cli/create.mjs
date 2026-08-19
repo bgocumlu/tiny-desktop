@@ -59,7 +59,7 @@ async function create() {
   const target = resolve(process.cwd(), targetArg);
   const appName = basename(target).replace(/^\.+/, '') || 'tiny-app';
   const packageName = slug(appName);
-  const runtimePackage = process.env.TINY_RUNTIME_PACKAGE ?? '^0.1.0';
+  const { version: runtimeVersion } = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
 
   try {
     if ((await readdir(target)).length) throw new Error(`Directory is not empty: ${target}`);
@@ -74,7 +74,7 @@ async function create() {
     type: 'module',
     scripts: { dev: 'tiny dev', build: 'tiny build' },
     engines: { node: '^20.19.0 || >=22.12.0' },
-    devDependencies: { 'tiny-desktop': runtimePackage, vite: '^8.2.1' }
+    devDependencies: { 'tiny-desktop': runtimeVersion, vite: '^8.2.1' }
   }, null, 2) + '\n');
 
   if (!noInstall) await runInstall(target);

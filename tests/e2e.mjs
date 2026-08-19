@@ -18,7 +18,6 @@ const dataRoot = join(process.env.APPDATA, appName);
 const webviewRoot = join(process.env.LOCALAPPDATA, appName, 'WebView2');
 let host;
 let passed = false;
-const previousRuntimePackage = process.env.TINY_RUNTIME_PACKAGE;
 
 function run(args, cwd, env = process.env) {
   const result = spawnSync(process.execPath, [npmCli, ...args], {
@@ -64,9 +63,11 @@ try {
   run(['run', 'pack:local'], repoRoot);
   run(['run', 'pack:create-local'], repoRoot);
 
-  const runtimePath = resolve(repoRoot, '.local-packages', 'tiny-desktop-0.1.0.tgz').replaceAll('\\', '/');
-  const env = { ...process.env, TINY_RUNTIME_PACKAGE: `file:${runtimePath}` };
-  const createPackage = './.local-packages/create-tiny-desktop-0.1.0.tgz';
+  const runtimeVersion = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')).version;
+  const createVersion = JSON.parse(await readFile(join(repoRoot, 'create-tiny-desktop/package.json'), 'utf8')).version;
+  const runtimePath = resolve(repoRoot, '.local-packages', `tiny-desktop-${runtimeVersion}.tgz`).replaceAll('\\', '/');
+  const env = process.env;
+  const createPackage = `./.local-packages/create-tiny-desktop-${createVersion}.tgz`;
   const invalidCreate = spawnSync(process.execPath, [npmCli, 'exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-desktop'], {
     cwd: repoRoot,
     env,
@@ -76,7 +77,13 @@ try {
   assert.notEqual(invalidCreate.status, 0, 'The initializer accepted a missing directory.');
   assert.match(`${invalidCreate.stdout}\n${invalidCreate.stderr}`, /A target directory is required/);
   assert.match(`${invalidCreate.stdout}\n${invalidCreate.stderr}`, /Usage: npx create-tiny-desktop <directory>/);
-  run(['exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-desktop', projectRoot], repoRoot, env);
+  run(['exec', '--yes', `--package=${createPackage}`, '--', 'create-tiny-desktop', projectRoot, '--no-install'], repoRoot, env);
+
+  const generatedPackagePath = join(projectRoot, 'package.json');
+  const generatedPackage = JSON.parse(await readFile(generatedPackagePath, 'utf8'));
+  generatedPackage.devDependencies['tiny-desktop'] = `file:${runtimePath}`;
+  await writeFile(generatedPackagePath, JSON.stringify(generatedPackage, null, 2) + '\n');
+  run(['install'], projectRoot, env);
 
   for (const path of ['package.json', '.gitignore', 'index.html', 'src/main.js', 'src/style.css', 'tiny.config.js', 'assets/icon.ico', 'assets/icon.svg']) {
     assert.equal(await exists(join(projectRoot, path)), true, `Missing generated file: ${path}`);
@@ -165,8 +172,6 @@ try {
     });
     await waitForExit(host);
   }
-  if (previousRuntimePackage === undefined) delete process.env.TINY_RUNTIME_PACKAGE;
-  else process.env.TINY_RUNTIME_PACKAGE = previousRuntimePackage;
   if (passed) {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(dataRoot, { recursive: true, force: true });
