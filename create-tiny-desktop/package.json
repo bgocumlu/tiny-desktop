@@ -1,6 +1,6 @@
 {
   "name": "create-tiny-desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Scaffold Tiny Desktop apps for Windows, Linux, and macOS with Node.js and npm.",
   "type": "module",
   "keywords": [
