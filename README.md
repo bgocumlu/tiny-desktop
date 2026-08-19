@@ -31,7 +31,8 @@ export default {
     description: 'A small desktop app'
   },
   package: 'standalone', // or 'installer'
-  storage: { mode: 'appData' } // or 'portable'
+  storage: { mode: 'appData' }, // or 'portable'
+  window: { width: 1000, height: 700 }
 };
 ```
 

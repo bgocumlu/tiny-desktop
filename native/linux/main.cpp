@@ -32,6 +32,8 @@ std::string storage_mode = "appData";
 std::string data_dir_override;
 std::string allowed_origin;
 std::string start_url;
+int window_width = 1200;
+int window_height = 800;
 std::string bundle_manifest;
 std::vector<std::uint8_t> bundle_bytes;
 std::uint64_t bundle_data_start = 0;
@@ -402,6 +404,8 @@ bool load_bundle() {
   bundled = true;
   if (const auto value = json_string(bundle_manifest, "appName")) app_name = *value;
   if (const auto value = json_string(bundle_manifest, "storage")) storage_mode = *value;
+  if (const auto value = json_number(bundle_manifest, "windowWidth", 0)) window_width = static_cast<int>(*value);
+  if (const auto value = json_number(bundle_manifest, "windowHeight", 0)) window_height = static_cast<int>(*value);
   return true;
 }
 
@@ -574,6 +578,10 @@ void parse_arguments(int argc, char** argv) {
       storage_mode = argv[++index];
     } else if (argument == "--data-dir" && index + 1 < argc) {
       data_dir_override = argv[++index];
+    } else if (argument == "--window-width" && index + 1 < argc) {
+      window_width = std::stoi(argv[++index]);
+    } else if (argument == "--window-height" && index + 1 < argc) {
+      window_height = std::stoi(argv[++index]);
     } else if ((argument == "--titlebar-color" || argument == "--titlebar-text-color") && index + 1 < argc) {
       ++index;
     } else if (argument == "--devtools") {
@@ -619,7 +627,7 @@ int main(int argc, char** argv) {
 
   window_handle = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_title(GTK_WINDOW(window_handle), app_name.c_str());
-  gtk_window_set_default_size(GTK_WINDOW(window_handle), 1200, 800);
+  gtk_window_set_default_size(GTK_WINDOW(window_handle), window_width, window_height);
   g_signal_connect(window_handle, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
   if (!create_webview()) {
     gtk_widget_destroy(window_handle);

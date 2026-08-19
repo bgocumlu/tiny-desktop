@@ -110,7 +110,7 @@ async function loadConfig() {
     },
     package: 'standalone',
     storage: { mode: 'appData' },
-    window: { titleBar: {} }
+    window: { width: 1200, height: 800, titleBar: {} }
   };
   let config = {};
   try {
@@ -126,6 +126,11 @@ async function loadConfig() {
   }
   const mode = config.storage?.mode ?? defaults.storage.mode;
   if (mode !== 'appData' && mode !== 'portable') throw new Error("tiny.config.js storage.mode must be 'appData' or 'portable'.");
+  const width = Number(config.window?.width ?? defaults.window.width);
+  const height = Number(config.window?.height ?? defaults.window.height);
+  for (const [name, value] of Object.entries({ width, height })) {
+    if (!Number.isInteger(value) || value <= 0) throw new Error(`tiny.config.js window.${name} must be a positive integer.`);
+  }
   const appConfig = config.app ?? {};
   const name = String(appConfig.name ?? defaults.app.name);
   const version = normalizeVersion(appConfig.version ?? defaults.app.version);
@@ -159,7 +164,7 @@ async function loadConfig() {
       icon
     },
     storage: { mode },
-    window: { ...defaults.window, ...config.window, titleBar: { ...defaults.window.titleBar, ...config.window?.titleBar } }
+    window: { ...defaults.window, ...config.window, width, height, titleBar: { ...defaults.window.titleBar, ...config.window?.titleBar } }
   };
 }
 
@@ -238,6 +243,7 @@ async function waitForVite(url, timeout = 30000) {
 function runtimeArgs(config) {
   const args = ['--app-name', config.app.name, '--storage', config.storage.mode];
   if (config.storage.mode === 'portable') args.push('--data-dir', join(projectRoot, '.tiny', 'data'));
+  args.push('--window-width', String(config.window.width), '--window-height', String(config.window.height));
   const titleBar = config.window.titleBar;
   if (titleBar.color) args.push('--titlebar-color', titleBar.color);
   if (titleBar.textColor) args.push('--titlebar-text-color', titleBar.textColor);
@@ -342,6 +348,8 @@ async function bundleRuntime(host, dist, output, config) {
   const manifest = Buffer.from(JSON.stringify({
     appName: config.app.name,
     storage: config.storage.mode,
+    windowWidth: config.window.width,
+    windowHeight: config.window.height,
     titlebarColor: config.window.titleBar.color,
     titlebarTextColor: config.window.titleBar.textColor,
     files: entries

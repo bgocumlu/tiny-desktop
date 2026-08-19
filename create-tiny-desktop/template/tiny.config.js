@@ -19,6 +19,8 @@ export default {
     mode: 'appData'
   },
   window: {
+    width: 1200,
+    height: 800,
     titleBar: {
       color: '#202020',
       textColor: '#ffffff'

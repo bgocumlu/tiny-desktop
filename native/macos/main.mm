@@ -24,6 +24,8 @@ std::string storage_mode = "appData";
 std::string data_dir_override;
 std::string allowed_origin;
 std::string start_url;
+int window_width = 1200;
+int window_height = 800;
 std::vector<std::uint8_t> bundle_bytes;
 std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> bundle_files;
 bool development = false;
@@ -117,6 +119,10 @@ bool load_bundle() {
   NSString* storage = manifest[@"storage"];
   if ([name isKindOfClass:[NSString class]]) app_name = [name UTF8String];
   if ([storage isKindOfClass:[NSString class]]) storage_mode = [storage UTF8String];
+  NSNumber* width = manifest[@"windowWidth"];
+  NSNumber* height = manifest[@"windowHeight"];
+  if ([width isKindOfClass:[NSNumber class]]) window_width = width.intValue;
+  if ([height isKindOfClass:[NSNumber class]]) window_height = height.intValue;
   NSString* titlebar = manifest[@"titlebarColor"];
   NSString* titlebar_text = manifest[@"titlebarTextColor"];
   if ([titlebar isKindOfClass:[NSString class]]) titlebar_color = [titlebar UTF8String];
@@ -334,7 +340,7 @@ NSColor* color_from_hex(const std::string& value) {
 
 @implementation TinyAppDelegate
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
-  NSRect frame = NSMakeRect(0, 0, 1200, 800);
+  NSRect frame = NSMakeRect(0, 0, window_width, window_height);
   window_handle = [[NSWindow alloc] initWithContentRect:frame
       styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
       backing:NSBackingStoreBuffered defer:NO];
@@ -408,6 +414,8 @@ void parse_arguments(int argc, char** argv) {
     } else if (argument == "--app-name" && index + 1 < argc) app_name = argv[++index];
     else if (argument == "--storage" && index + 1 < argc) storage_mode = argv[++index];
     else if (argument == "--data-dir" && index + 1 < argc) data_dir_override = argv[++index];
+    else if (argument == "--window-width" && index + 1 < argc) window_width = std::stoi(argv[++index]);
+    else if (argument == "--window-height" && index + 1 < argc) window_height = std::stoi(argv[++index]);
     else if (argument == "--titlebar-color" && index + 1 < argc) titlebar_color = argv[++index];
     else if (argument == "--titlebar-text-color" && index + 1 < argc) titlebar_text_color = argv[++index];
     else if (argument == "--devtools") devtools = true;

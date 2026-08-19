@@ -37,6 +37,8 @@ std::wstring storage_mode = L"appData";
 std::wstring data_dir_override;
 std::wstring allowed_origin;
 std::wstring start_url;
+int window_width = 1200;
+int window_height = 800;
 std::wstring bundle_manifest;
 std::vector<std::uint8_t> bundle_bytes;
 std::uint64_t bundle_data_start = 0;
@@ -416,6 +418,8 @@ bool load_bundle() {
   bundled = true;
   if (const auto value = json_string(bundle_manifest, L"appName")) app_name = *value;
   if (const auto value = json_string(bundle_manifest, L"storage")) storage_mode = *value;
+  if (const auto value = json_number(bundle_manifest, L"windowWidth", 0)) window_width = static_cast<int>(*value);
+  if (const auto value = json_number(bundle_manifest, L"windowHeight", 0)) window_height = static_cast<int>(*value);
   if (const auto value = json_string(bundle_manifest, L"titlebarColor")) titlebar_color = color_from_hex(*value);
   if (const auto value = json_string(bundle_manifest, L"titlebarTextColor")) titlebar_text_color = color_from_hex(*value);
   return true;
@@ -646,6 +650,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       storage_mode = arguments[++index];
     } else if (argument == L"--data-dir" && index + 1 < argument_count) {
       data_dir_override = arguments[++index];
+    } else if (argument == L"--window-width" && index + 1 < argument_count) {
+      window_width = std::stoi(arguments[++index]);
+    } else if (argument == L"--window-height" && index + 1 < argument_count) {
+      window_height = std::stoi(arguments[++index]);
     } else if (argument == L"--titlebar-color" && index + 1 < argument_count) {
       titlebar_color = color_from_hex(arguments[++index]);
     } else if (argument == L"--titlebar-text-color" && index + 1 < argument_count) {
@@ -688,7 +696,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   RegisterClassW(&window_class);
 
   window_handle = CreateWindowW(window_class.lpszClassName, app_name.c_str(), WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, CW_USEDEFAULT, 1200, 800, nullptr, nullptr, instance, nullptr);
+      CW_USEDEFAULT, CW_USEDEFAULT, window_width, window_height, nullptr, nullptr, instance, nullptr);
   if (!window_handle) return 1;
   configure_titlebar();
   ShowWindow(window_handle, SW_SHOW);
