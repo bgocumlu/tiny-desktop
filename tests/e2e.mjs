@@ -13,7 +13,7 @@ const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('Run the e2e test with npm test.');
 const projectRoot = await mkdtemp(join(repoRoot, '.tmp-e2e-'));
-const appName = basename(projectRoot);
+const appName = basename(projectRoot).replace(/^\.+/, '');
 const dataRoot = join(process.env.APPDATA, appName);
 const webviewRoot = join(process.env.LOCALAPPDATA, appName, 'WebView2');
 let host;

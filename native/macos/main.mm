@@ -221,6 +221,11 @@ void handle_message(NSString* json) {
     [window_handle zoom:nil];
     return send_message(identifier, [NSNull null]);
   }
+  if ([method isEqualToString:@"window.restore"]) {
+    if (window_handle.miniaturized) [window_handle deminiaturize:nil];
+    if (window_handle.zoomed) [window_handle zoom:nil];
+    return send_message(identifier, [NSNull null]);
+  }
   if ([method isEqualToString:@"shell.openExternal"]) {
     NSString* value = request[@"url"];
     if (![value isKindOfClass:[NSString class]] || (![value hasPrefix:@"https://"] && ![value hasPrefix:@"http://"])) {
@@ -254,6 +259,14 @@ void handle_message(NSString* json) {
     }
     return send_message(identifier, [NSNull null]);
   }
+  if ([method isEqualToString:@"data.remove"]) {
+    const auto path = store_path(identifier, request);
+    if (path.empty()) return;
+    std::error_code remove_error;
+    std::filesystem::remove(path, remove_error);
+    if (remove_error) return send_message(identifier, nil, @"REMOVE_FAILED", @"The JSON store could not be removed.");
+    return send_message(identifier, [NSNull null]);
+  }
   send_message(identifier, nil, @"METHOD_NOT_FOUND", @"The native method does not exist.");
 }
 
@@ -280,12 +293,14 @@ constexpr char bridge_script[] = R"JS(
     app: { getDataPath: () => request('app.getDataPath') },
     data: {
       read: store => request('data.read', { store }),
-      write: (store, value) => request('data.write', { store, value })
+      write: (store, value) => request('data.write', { store, value }),
+      remove: store => request('data.remove', { store })
     },
     window: {
       close: () => request('window.close'),
       minimize: () => request('window.minimize'),
-      maximize: () => request('window.maximize')
+      maximize: () => request('window.maximize'),
+      restore: () => request('window.restore')
     },
     shell: { openExternal: url => request('shell.openExternal', { url }) }
   });

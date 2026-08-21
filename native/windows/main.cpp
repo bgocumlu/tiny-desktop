@@ -302,6 +302,10 @@ void handle_message(const std::wstring& json) {
     ShowWindow(window_handle, SW_MAXIMIZE);
     return result_empty(*id);
   }
+  if (*method == L"window.restore") {
+    ShowWindow(window_handle, SW_RESTORE);
+    return result_empty(*id);
+  }
   if (*method == L"shell.openExternal") {
     const auto url = json_string(json, L"url");
     if (!url || (url->rfind(L"https://", 0) != 0 && url->rfind(L"http://", 0) != 0)) {
@@ -329,6 +333,14 @@ void handle_message(const std::wstring& json) {
       return;
     }
     return write_store(*id, *path, *value);
+  }
+  if (*method == L"data.remove") {
+    const auto path = store_path(*id, json);
+    if (!path) return;
+    std::error_code error;
+    std::filesystem::remove(*path, error);
+    if (error) return result_error(*id, L"REMOVE_FAILED", L"The JSON store could not be removed.");
+    return result_empty(*id);
   }
 
   result_error(*id, L"METHOD_NOT_FOUND", L"The native method does not exist.");
@@ -358,12 +370,14 @@ constexpr wchar_t bridge_script[] = LR"JS(
     app: { getDataPath: () => request('app.getDataPath') },
     data: {
       read: store => request('data.read', { store }),
-      write: (store, value) => request('data.write', { store, value })
+      write: (store, value) => request('data.write', { store, value }),
+      remove: store => request('data.remove', { store })
     },
     window: {
       close: () => request('window.close'),
       minimize: () => request('window.minimize'),
-      maximize: () => request('window.maximize')
+      maximize: () => request('window.maximize'),
+      restore: () => request('window.restore')
     },
     shell: { openExternal: url => request('shell.openExternal', { url }) }
   });

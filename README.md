@@ -45,8 +45,8 @@ The generated app can use `window.tiny`:
 | API | Purpose |
 | --- | --- |
 | `tiny.app.getDataPath()` | Get the app data directory |
-| `tiny.data.read(store)` / `write(store, value)` | Read and write JSON data |
-| `tiny.window.close()` / `minimize()` / `maximize()` | Control the window |
+| `tiny.data.read(store)` / `write(store, value)` / `remove(store)` | Read, write, and remove JSON data |
+| `tiny.window.close()` / `minimize()` / `maximize()` / `restore()` | Control the window |
 | `tiny.shell.openExternal(url)` | Open a URL with the system browser |
 
 ## Platform requirements
