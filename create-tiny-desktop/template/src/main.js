@@ -1,5 +1,3 @@
-import './style.css';
-
 const status = document.querySelector('#status');
 const output = document.querySelector('#output');
 const actions = document.querySelectorAll('.toolbar-button');
